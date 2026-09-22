@@ -1,0 +1,30 @@
+
+# 本机配置、身份资料和生成内容
+.DS_Store
+.env
+.env.*
+!.env.example
+*.local.json
+*.local.yml
+*.local.properties
+*.log
+node_modules/
+.build/
+target/
+dist/
+.work/
+.idea/
+*.tgz
+*.zip
+*.pkg
+*.dmg
+
+# Local provider credentials must never be committed.
+*.secret
+**/auth.json
+**/credentials.json
+**/api-key
+**/api_key
+**/caller-secret
+**/internal-secret
+**/cursor-public-secret
