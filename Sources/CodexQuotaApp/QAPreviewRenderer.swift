@@ -105,11 +105,7 @@ enum QAPreviewRenderer {
             let defaults = UserDefaults(suiteName: "codexquota.qa.\(UUID().uuidString)")!
             let state = QuotaAppState(defaults: defaults)
             configure(state)
-            let hover: HoverTarget? = switch name {
-            case "hover-claude": .tile("claude")
-            case "hover-total", "hover-min", "hover-scanning": .total
-            default: nil
-            }
+            let hover = name.hasPrefix("hover")
             let view = QuotaView(previewHover: hover, tracksHover: false)
                 .environmentObject(state)
                 .frame(width: size.width, height: size.height)

@@ -8,12 +8,11 @@ struct QuotaView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
-    /// Where the pointer rests (after a short delay); that tile, or both for the total, shows today's breakdown.
-    @State private var hovered: HoverTarget?
-    @State private var pendingHover: HoverTarget?
+    /// Whether the pointer rests on the card (after a short delay); the card then shows today's full breakdown.
+    @State private var isHovering = false
     @State private var hoverTask: Task<Void, Never>?
-    /// QA renders force a hover state.
-    var previewHover: HoverTarget?
+    /// QA renders force the breakdown.
+    var previewHover = false
     /// Offline renders can't draw the AppKit tracking view.
     var tracksHover = true
 
@@ -22,6 +21,7 @@ struct QuotaView: View {
             let s = LayoutMetrics.scale(for: proxy.size)
             let isResting = state.eyeRestPresentation.phase == .resting
             let groups = [codexGroup, claudeGroup]
+            let breakdown = isResting || !(previewHover || isHovering) ? nil : state.todayUsage
 
             ZStack {
                 background(scale: s)
@@ -29,15 +29,25 @@ struct QuotaView: View {
                 Group {
                     if isResting {
                         restingContent(scale: s)
+                    } else if let breakdown {
+                        UsageBreakdown(usage: breakdown, rate: state.exchangeRate, scale: s)
+                            .transition(.opacity)
                     } else {
                         regularContent(groups: groups, scale: s, width: proxy.size.width)
+                            .transition(.opacity)
                     }
                 }
                 .padding(12 * s)
             }
+            // One tracking area for the whole card, so swapping the content never moves it.
+            .background {
+                if tracksHover {
+                    HoverTracker { inside in hoverChanged(inside) }
+                }
+            }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: groups.map(\.animationKey))
             .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: state.eyeRestPresentation.phase)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: activeHover)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: breakdown != nil)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(isResting ? eyeRestAccessibilityText : accessibilityText(groups: groups))
             .contextMenu { QuotaMenuContent(items: QuotaMenu.items(for: state, placement: .overlay)) }
@@ -53,14 +63,7 @@ struct QuotaView: View {
         return VStack(alignment: .leading, spacing: 8 * s) {
             HStack(alignment: .top, spacing: 8 * s) {
                 ForEach(groups) { group in
-                    MeterTile(
-                        group: group,
-                        scale: s,
-                        showsTokenUnit: showsUnit,
-                        showsDetails: activeHover == .tile(group.id) || activeHover == .total,
-                        contrast: contrast
-                    )
-                    .background { hoverTracker(.tile(group.id)) }
+                    MeterTile(group: group, scale: s, showsTokenUnit: showsUnit, contrast: contrast)
                 }
             }
             .frame(maxHeight: .infinity, alignment: .top)
@@ -106,7 +109,6 @@ struct QuotaView: View {
                         .monospacedDigit()
                         .foregroundStyle(Palette.primary)
                 }
-                .background { hoverTracker(.total) }
             }
         }
         .foregroundStyle(color)
@@ -180,34 +182,17 @@ struct QuotaView: View {
 
     // MARK: - Hover
 
-    private var activeHover: HoverTarget? { previewHover ?? hovered }
-
-    @ViewBuilder
-    private func hoverTracker(_ target: HoverTarget) -> some View {
-        if tracksHover {
-            HoverTracker { inside in hoverChanged(target, inside: inside) }
-        }
-    }
-
-    private func hoverChanged(_ target: HoverTarget, inside: Bool) {
+    private func hoverChanged(_ inside: Bool) {
+        hoverTask?.cancel()
         if inside {
-            // A short delay so sweeping the pointer across the card doesn't flicker it.
-            hoverTask?.cancel()
-            pendingHover = target
+            // A short delay so passing the pointer over the card doesn't flip it.
             hoverTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(200))
+                try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled else { return }
-                hovered = target
+                isHovering = true
             }
         } else {
-            // Exit and enter events of neighbouring areas can arrive in either order.
-            if pendingHover == target {
-                hoverTask?.cancel()
-                pendingHover = nil
-            }
-            if hovered == target {
-                hovered = nil
-            }
+            isHovering = false
         }
     }
 
@@ -281,39 +266,11 @@ struct QuotaView: View {
     /// Placeholder until the first scan finishes.
     private func todayLine(_ tally: TokenTally?, name: String) -> TodayLine {
         guard let tally, state.todayUsage != nil else {
-            return TodayLine(tokens: "—", money: "", requests: nil, rows: [], basis: "正在读取本机 \(name) 日志…")
+            return TodayLine(tokens: "—", money: "")
         }
-        let rate = state.exchangeRate
-        let yuan = tally.usd * rate.usdToCNY
-        let money: String
-        if tally.unpricedTokens > 0 {
-            money = tally.usd > 0 ? "≥" + TokenFormatting.yuan(yuan) : "未计价"
-        } else {
-            money = TokenFormatting.yuan(yuan)
-        }
-        var basis = "\(TokenFormatting.dollars(tally.usd)) × \(String(format: "%.4f", rate.usdToCNY))"
-        if let hitRate = tally.cacheHitRate {
-            basis = "命中率 \(TokenFormatting.percent(hitRate)) · " + basis
-        }
-        if tally.unpricedTokens > 0 {
-            basis += " · 未计价 \(TokenFormatting.compactTokens(tally.unpricedTokens))"
-        }
-
-        var rows: [TodayLine.Row] = [
-            .init(label: "缓存命中", value: TokenFormatting.compactTokens(tally.cacheReadTokens)),
-            .init(label: "缓存未命中", value: TokenFormatting.compactTokens(tally.cacheMissTokens))
-        ]
-        // Claude writes most misses into the cache (billed above the input rate); show that share.
-        if tally.cacheWriteTokens > 0 {
-            rows.append(.init(label: "其中写入缓存", value: TokenFormatting.compactTokens(tally.cacheWriteTokens), isSubItem: true))
-        }
-        rows.append(.init(label: "输出", value: TokenFormatting.compactTokens(tally.outputTokens)))
         return TodayLine(
             tokens: TokenFormatting.compactTokens(tally.totalTokens),
-            money: money,
-            requests: "\(tally.requests) 次请求",
-            rows: rows,
-            basis: basis
+            money: UsageBreakdown.money(tally, rate: state.exchangeRate)
         )
     }
 
@@ -350,12 +307,16 @@ struct QuotaView: View {
         }
         if let usage = state.todayUsage {
             for (name, tally) in [("Codex", usage.codex), ("Claude", usage.claude)] {
-                let yuan = TokenFormatting.yuan(tally.usd * state.exchangeRate.usdToCNY)
+                let yuan = UsageBreakdown.money(tally, rate: state.exchangeRate)
+                let hitRate = tally.cacheHitRate.map { "，命中率 \(TokenFormatting.percent($0))" } ?? ""
                 parts.append(
                     "\(name) 今日 \(tally.requests) 次请求，\(TokenFormatting.compactTokens(tally.totalTokens)) tokens，约 \(yuan)；"
+                        + "输入 \(TokenFormatting.compactTokens(tally.uncachedInputTokens))，"
+                        + "缓存写入 \(TokenFormatting.compactTokens(tally.cacheWriteTokens))，"
+                        + "缓存读取 \(TokenFormatting.compactTokens(tally.cacheReadTokens))，"
+                        + "输出 \(TokenFormatting.compactTokens(tally.outputTokens))，"
                         + "缓存命中 \(TokenFormatting.compactTokens(tally.cacheReadTokens))，"
-                        + "缓存未命中 \(TokenFormatting.compactTokens(tally.cacheMissTokens))，"
-                        + "输出 \(TokenFormatting.compactTokens(tally.outputTokens))"
+                        + "缓存未命中 \(TokenFormatting.compactTokens(tally.cacheMissTokens))\(hitRate)"
                 )
             }
         }
@@ -426,26 +387,8 @@ private struct MeterGroup: Identifiable {
 }
 
 private struct TodayLine: Equatable {
-    struct Row: Equatable {
-        let label: String
-        let value: String
-        /// A part of the row above ("其中…"), drawn indented and quieter.
-        var isSubItem = false
-    }
-
     let tokens: String
     let money: String
-    /// "474 次请求"; nil before the first scan.
-    let requests: String?
-    /// Breakdown shown while the pointer rests on the tile.
-    let rows: [Row]
-    /// "$59.73 × 6.7227", or a status line before the first scan.
-    let basis: String
-}
-
-enum HoverTarget: Equatable {
-    case tile(String)
-    case total
 }
 
 // MARK: - Components
@@ -454,7 +397,6 @@ private struct MeterTile: View {
     let group: MeterGroup
     let scale: CGFloat
     let showsTokenUnit: Bool
-    let showsDetails: Bool
     let contrast: ColorSchemeContrast
 
     var body: some View {
@@ -463,14 +405,9 @@ private struct MeterTile: View {
             header
 
             VStack(alignment: .leading, spacing: 6 * s) {
-                if showsDetails {
-                    detailBody
-                } else {
-                    tileBody
-                }
+                tileBody
             }
             .frame(maxHeight: .infinity, alignment: .leading)
-            .transition(.opacity)
 
             todayRow
         }
@@ -538,33 +475,6 @@ private struct MeterTile: View {
         }
     }
 
-    /// Today's breakdown, in place of the quota while the pointer rests on the tile.
-    private var detailBody: some View {
-        let s = scale
-        return VStack(alignment: .leading, spacing: 3 * s) {
-            ForEach(group.today.rows, id: \.label) { row in
-                HStack(alignment: .firstTextBaseline, spacing: 6 * s) {
-                    Text(row.label)
-                        .font(.system(size: (row.isSubItem ? 11 : 12) * s, weight: .medium))
-                        .foregroundStyle(row.isSubItem ? Palette.tertiary : Palette.secondary)
-                        .padding(.leading, row.isSubItem ? 10 * s : 0)
-                    Spacer(minLength: 6 * s)
-                    Text(row.value)
-                        .font(.system(size: (row.isSubItem ? 12 : 13) * s, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(row.isSubItem ? Palette.secondary : Palette.primary.opacity(0.9))
-                }
-            }
-            Text(group.today.basis)
-                .font(.system(size: 11 * s, weight: .medium, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(Palette.tertiary)
-                .padding(.top, 1 * s)
-        }
-        .lineLimit(1)
-        .minimumScaleFactor(0.8)
-    }
-
     private var todayRow: some View {
         let s = scale
         return VStack(alignment: .leading, spacing: 7 * s) {
@@ -610,11 +520,7 @@ private struct MeterTile: View {
                 .font(.system(size: 15 * s, weight: .semibold))
                 .foregroundStyle(Palette.primary.opacity(0.9))
             Spacer(minLength: 2 * s)
-            if showsDetails {
-                Text(group.today.requests.map { "今日 · \($0)" } ?? "今日明细")
-                    .font(.system(size: 12 * s, weight: .medium))
-                    .foregroundStyle(Palette.secondary)
-            } else if group.isStale {
+            if group.isStale {
                 Text(group.isUpdating ? "更新中" : "数据延迟")
                     .font(.system(size: 12 * s, weight: .medium))
                     .foregroundStyle(Palette.tertiary)
@@ -644,6 +550,133 @@ private struct MeterTile: View {
         }
         .padding(.top, 2 * s)
         .opacity(group.isStale ? 0.62 : 1)
+    }
+}
+
+/// Today's full breakdown for both tools, across the whole card while the pointer rests on it.
+private struct UsageBreakdown: View {
+    let usage: DailyTokenUsage
+    let rate: ExchangeRate
+    let scale: CGFloat
+
+    private struct Row: Identifiable {
+        let label: String
+        let codex: String
+        let claude: String
+        /// A part of the row above ("其中…"), drawn indented and quieter.
+        var isSubItem = false
+        /// The bottom line of a table (the value in yuan).
+        var isEmphasized = false
+        var id: String { label }
+    }
+
+    static func money(_ tally: TokenTally, rate: ExchangeRate) -> String {
+        let yuan = TokenFormatting.yuan(tally.usd * rate.usdToCNY)
+        guard tally.unpricedTokens > 0 else { return yuan }
+        return tally.usd > 0 ? "≥" + yuan : "未计价"
+    }
+
+    private static func dollars(_ tally: TokenTally) -> String {
+        let dollars = TokenFormatting.dollars(tally.usd)
+        return tally.unpricedTokens > 0 ? "≥" + dollars : dollars
+    }
+
+    private func row(_ label: String, subItem: Bool = false, emphasized: Bool = false, _ value: (TokenTally) -> String) -> Row {
+        Row(label: label, codex: value(usage.codex), claude: value(usage.claude), isSubItem: subItem, isEmphasized: emphasized)
+    }
+
+    private var usageRows: [Row] {
+        [
+            row("请求次数") { "\($0.requests)" },
+            row("总 tokens") { TokenFormatting.compactTokens($0.totalTokens) },
+            row("输入") { TokenFormatting.compactTokens($0.uncachedInputTokens) },
+            row("缓存写入") { TokenFormatting.compactTokens($0.cacheWriteTokens) },
+            row("缓存读取") { TokenFormatting.compactTokens($0.cacheReadTokens) },
+            row("输出") { TokenFormatting.compactTokens($0.outputTokens) }
+        ]
+    }
+
+    private var cacheRows: [Row] {
+        [
+            row("缓存命中") { TokenFormatting.compactTokens($0.cacheReadTokens) },
+            row("缓存未命中") { TokenFormatting.compactTokens($0.cacheMissTokens) },
+            row("其中写入缓存", subItem: true) { TokenFormatting.compactTokens($0.cacheWriteTokens) },
+            row("命中率") { $0.cacheHitRate.map(TokenFormatting.percent) ?? "—" },
+            row("API 标价") { Self.dollars($0) },
+            row("折合人民币", emphasized: true) { Self.money($0, rate: rate) }
+        ]
+    }
+
+    var body: some View {
+        let s = scale
+        VStack(alignment: .leading, spacing: 8 * s) {
+            HStack(alignment: .center, spacing: 12 * s) {
+                table(title: "今日用量", rows: usageRows)
+                Rectangle()
+                    .fill(Palette.tileBorder)
+                    .frame(width: 1)
+                table(title: "缓存与金额", rows: cacheRows)
+            }
+            .frame(maxHeight: .infinity)
+
+            footnote
+        }
+        .padding(.horizontal, 4 * s)
+    }
+
+    private func table(title: String, rows: [Row]) -> some View {
+        let s = scale
+        return Grid(alignment: .trailing, horizontalSpacing: 8 * s, verticalSpacing: 5 * s) {
+            GridRow {
+                Text(title)
+                    .foregroundStyle(Palette.secondary)
+                    .gridColumnAlignment(.leading)
+                Text("Codex").foregroundStyle(Palette.codex)
+                Text("Claude").foregroundStyle(Palette.claude)
+            }
+            .font(.system(size: 12 * s, weight: .semibold))
+
+            ForEach(rows) { row in
+                GridRow {
+                    Text(row.label)
+                        .font(.system(size: (row.isSubItem ? 11.5 : 12.5) * s, weight: .medium))
+                        .foregroundStyle(row.isSubItem ? Palette.tertiary : Palette.secondary)
+                        .padding(.leading, row.isSubItem ? 7 * s : 0)
+                    Text(row.codex)
+                    Text(row.claude)
+                }
+                .font(.system(size: (row.isSubItem ? 12.5 : 13.5) * s, weight: .semibold, design: .rounded))
+                .foregroundStyle(row.isEmphasized ? Palette.primary : (row.isSubItem ? Palette.secondary : Palette.primary.opacity(0.88)))
+            }
+        }
+        .monospacedDigit()
+        .lineLimit(1)
+        .minimumScaleFactor(0.75)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var footnote: some View {
+        let s = scale
+        let combined = usage.combined
+        var note = "汇率 1 美元 = \(String(format: "%.4f", rate.usdToCNY)) 元（\(rate.asOf) · \(rate.source)）"
+        if combined.unpricedTokens > 0 {
+            note += " · 另有 \(TokenFormatting.compactTokens(combined.unpricedTokens)) tokens 未计价"
+        }
+        return HStack(alignment: .firstTextBaseline, spacing: 6 * s) {
+            Text("今日合计")
+                .font(.system(size: 12 * s, weight: .medium))
+                .foregroundStyle(Palette.secondary)
+            Text(Self.money(combined, rate: rate))
+                .font(.system(size: 14 * s, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Palette.primary)
+            Text(note)
+                .font(.system(size: 11 * s, weight: .medium))
+                .foregroundStyle(Palette.tertiary)
+            Spacer(minLength: 0)
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.75)
     }
 }
 
