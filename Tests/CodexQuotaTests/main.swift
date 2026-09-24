@@ -141,8 +141,44 @@ func runTests() throws {
     try expect(ninetyMinutes.session.promptCount == 4, "ninety minutes produces only recurring micro-rest prompts")
 }
 
+@MainActor
+func runClaudeUsageTests() throws {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    let payload = Data(#"{"five_hour":{"utilization":6.4,"resets_at":"2027-01-15T12:59:59.943648+00:00"},"seven_day":{"utilization":29,"resets_at":"2027-01-20T08:00:00Z"},"seven_day_oauth_apps":null,"seven_day_opus":{"utilization":0.0,"resets_at":null},"seven_day_sonnet":{"utilization":12,"resets_at":"2027-01-20T08:00:00Z"},"extra_usage":{"is_enabled":false}}"#.utf8)
+    let snapshot = try ClaudeUsageDecoder.decode(payload, now: now)
+    try expect(snapshot.windows.map(\.kind) == [.fiveHour, .sevenDay, .sevenDaySonnet], "claude windows decoded in order, empty opus cap skipped")
+    try expect(snapshot.windows.map(\.remainingPercent) == [94, 71, 88], "claude utilization becomes remaining")
+    try expect(snapshot.limitingWindow?.kind == .sevenDay, "claude limiting window")
+    try expect(snapshot.windows[0].resetsAt.map { abs($0.timeIntervalSince1970 - 1_800_017_999.943648) < 0.01 } == true, "fractional ISO date parses")
+    try expect(snapshot.windows[1].resetsAt == Date(timeIntervalSince1970: 1_800_432_000), "plain ISO date parses")
+
+    let idle = Data(#"{"five_hour":{"utilization":0,"resets_at":null},"seven_day":{"utilization":140,"resets_at":null}}"#.utf8)
+    let idleSnapshot = try ClaudeUsageDecoder.decode(idle, now: now)
+    try expect(idleSnapshot.windows.map(\.remainingPercent) == [100, 0], "claude clamps and keeps unset reset")
+
+    let elapsed = ClaudeUsageSnapshot(
+        windows: [ClaudeUsageWindow(kind: .fiveHour, remainingPercent: 3, resetsAt: now.addingTimeInterval(-1))],
+        fetchedAt: now.addingTimeInterval(-60)
+    ).refreshedForElapsedResets(at: now)
+    try expect(elapsed.windows.first?.remainingPercent == 100, "elapsed claude window resets to full")
+
+    do {
+        _ = try ClaudeUsageDecoder.decode(Data(#"{"error":{"type":"authentication_error"}}"#.utf8), now: now)
+        throw TestFailure.failed("claude error payload must not decode")
+    } catch ClaudeUsageDecodeError.missingWindows {
+        checks += 1
+    }
+
+    let utc = TimeZone(secondsFromGMT: 0)!
+    try expect(QuotaFormatting.compactResetLabel(for: now.addingTimeInterval(30), now: now, timeZone: utc) == "即将重置", "reset imminent")
+    try expect(QuotaFormatting.compactResetLabel(for: now.addingTimeInterval(25 * 60), now: now, timeZone: utc) == "25 分钟后", "reset minutes")
+    try expect(QuotaFormatting.compactResetLabel(for: now.addingTimeInterval(2 * 3600 + 5 * 60), now: now, timeZone: utc) == "2 小时 5 分后", "reset hours")
+    try expect(QuotaFormatting.compactResetLabel(for: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: -3 * 86_400), timeZone: utc) == "周四 00:00", "reset weekday")
+}
+
 do {
     try runTests()
+    try runClaudeUsageTests()
     print("PASS: \(checks) checks")
 } catch {
     fputs("FAIL: \(error)\n", stderr)

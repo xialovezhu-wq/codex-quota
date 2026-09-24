@@ -4,31 +4,41 @@ import Foundation
 
 @MainActor
 final class WindowStateStore {
+    nonisolated static let defaultSize = NSSize(width: 340, height: 150)
+    nonisolated static let minimumSize = NSSize(width: 180, height: 56)
+    nonisolated static let maximumSize = NSSize(width: 560, height: 300)
+
     private let defaults: UserDefaults
-    private let key = "window.frame.v1"
+    private let key = "window.frame.v2"
+    /// Frames saved before the Claude section existed: keep their position, not their (too small) size.
+    private let legacyKey = "window.frame.v1"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
     }
 
-    func restoreFrame(defaultSize: NSSize = NSSize(width: 228, height: 72)) -> NSRect {
+    func restoreFrame(defaultSize: NSSize = WindowStateStore.defaultSize) -> NSRect {
         let screens = NSScreen.screens
         let fallbackScreen = NSScreen.main ?? screens.first
         guard let fallbackScreen else {
             return NSRect(origin: .zero, size: defaultSize)
         }
 
-        guard
-            let data = defaults.data(forKey: key),
-            let stored = try? JSONDecoder().decode(StoredFrame.self, from: data)
-        else {
+        let stored: StoredFrame
+        if let data = defaults.data(forKey: key),
+           let current = try? JSONDecoder().decode(StoredFrame.self, from: data) {
+            stored = current
+        } else if let data = defaults.data(forKey: legacyKey),
+                  let legacy = try? JSONDecoder().decode(StoredFrame.self, from: data) {
+            stored = legacy.resized(to: defaultSize)
+        } else {
             return defaultFrame(on: fallbackScreen, size: defaultSize)
         }
 
         let screen = screens.first { screenIdentifier($0) == stored.screenID } ?? fallbackScreen
         let visible = screen.visibleFrame
-        let width = min(max(stored.width, 168), min(420, visible.width))
-        let height = min(max(stored.height, 56), min(144, visible.height))
+        let width = min(max(stored.width, Self.minimumSize.width), min(Self.maximumSize.width, visible.width))
+        let height = min(max(stored.height, Self.minimumSize.height), min(Self.maximumSize.height, visible.height))
         let xTravel = max(0, visible.width - width)
         let yTravel = max(0, visible.height - height)
         let x = visible.minX + min(1, max(0, stored.normalizedX)) * xTravel
@@ -56,6 +66,7 @@ final class WindowStateStore {
 
     func reset() {
         defaults.removeObject(forKey: key)
+        defaults.removeObject(forKey: legacyKey)
     }
 
     func clampToVisibleScreens(_ frame: NSRect) -> NSRect {
@@ -66,7 +77,7 @@ final class WindowStateStore {
         return defaultFrame(on: screen, size: frame.size)
     }
 
-    func defaultFrame(on screen: NSScreen? = NSScreen.main, size: NSSize = NSSize(width: 228, height: 72)) -> NSRect {
+    func defaultFrame(on screen: NSScreen? = NSScreen.main, size: NSSize = WindowStateStore.defaultSize) -> NSRect {
         guard let screen = screen ?? NSScreen.screens.first else {
             return NSRect(origin: .zero, size: size)
         }
@@ -91,8 +102,8 @@ final class WindowStateStore {
     }
 
     private func clamp(_ frame: NSRect, to visible: NSRect) -> NSRect {
-        let width = min(max(frame.width, 168), min(420, visible.width))
-        let height = min(max(frame.height, 56), min(144, visible.height))
+        let width = min(max(frame.width, Self.minimumSize.width), min(Self.maximumSize.width, visible.width))
+        let height = min(max(frame.height, Self.minimumSize.height), min(Self.maximumSize.height, visible.height))
         let x = min(max(frame.minX, visible.minX), visible.maxX - width)
         let y = min(max(frame.minY, visible.minY), visible.maxY - height)
         return NSRect(x: x, y: y, width: width, height: height)
@@ -115,6 +126,16 @@ private struct StoredFrame: Codable {
     let normalizedY: Double
     let width: Double
     let height: Double
+
+    func resized(to size: NSSize) -> StoredFrame {
+        StoredFrame(
+            screenID: screenID,
+            normalizedX: normalizedX,
+            normalizedY: normalizedY,
+            width: max(width, size.width),
+            height: max(height, size.height)
+        )
+    }
 }
 
 private extension NSRect {

@@ -7,6 +7,8 @@ import CodexQuotaCore
 final class QuotaAppState: ObservableObject {
     @Published private(set) var quotaState: QuotaState = .connecting
     @Published private(set) var snapshot: QuotaSnapshot?
+    @Published private(set) var claudeState: ClaudeUsageState = .connecting
+    @Published private(set) var claudeSnapshot: ClaudeUsageSnapshot?
     @Published var isLocked: Bool
     @Published var isAlwaysOnTop: Bool
     @Published var opacity: Double
@@ -18,6 +20,7 @@ final class QuotaAppState: ObservableObject {
     var onResetPosition: (() -> Void)?
 
     private let provider: QuotaProvider
+    private let claudeProvider: ClaudeUsageProvider
     private let launchAtLogin = LaunchAtLoginController()
     private let defaults: UserDefaults
     private let eyeRestController: EyeRestController
@@ -26,6 +29,7 @@ final class QuotaAppState: ObservableObject {
 
     private enum Key {
         static let snapshot = "quota.snapshot.v1"
+        static let claudeSnapshot = "claude.snapshot.v1"
         static let locked = "window.locked"
         static let alwaysOnTop = "window.alwaysOnTop"
         static let opacity = "window.opacity"
@@ -34,12 +38,14 @@ final class QuotaAppState: ObservableObject {
 
     init(
         provider: QuotaProvider = CodexAppServerProvider(),
+        claudeProvider: ClaudeUsageProvider = ClaudeUsageProvider(),
         defaults: UserDefaults = .standard,
         eyeRestClock: any EyeRestClock = SystemEyeRestClock()
     ) {
         let eyeRestSettings = Self.loadEyeRestSettings(from: defaults) ?? EyeRestSettings()
         let eyeRestController = EyeRestController(settings: eyeRestSettings, clock: eyeRestClock)
         self.provider = provider
+        self.claudeProvider = claudeProvider
         self.defaults = defaults
         self.eyeRestController = eyeRestController
         eyeRestPresentation = eyeRestController.presentation
@@ -53,9 +59,16 @@ final class QuotaAppState: ObservableObject {
             quotaState = .stale
             Self.persistSnapshot(snapshot, to: defaults)
         }
+        claudeSnapshot = Self.loadClaudeSnapshot(from: defaults)
+        if claudeSnapshot != nil {
+            claudeState = .stale
+        }
         Self.persistEyeRestSettings(eyeRestSettings, to: defaults)
 
         provider.onEvent = { [weak self] event in
+            self?.handle(event)
+        }
+        claudeProvider.onEvent = { [weak self] event in
             self?.handle(event)
         }
         eyeRestController.onChange = { [weak self] presentation in
@@ -75,6 +88,7 @@ final class QuotaAppState: ObservableObject {
 
     func start() {
         provider.start()
+        claudeProvider.start()
         eyeRestController.startLifecycle()
         staleTask?.cancel()
         staleTask = Task { @MainActor [weak self] in
@@ -90,11 +104,13 @@ final class QuotaAppState: ObservableObject {
         staleTask?.cancel()
         eyeRestController.stopLifecycle()
         provider.stop()
+        claudeProvider.stop()
     }
 
     func refresh() {
         quotaState = .connecting
         provider.refresh()
+        claudeProvider.refresh()
     }
 
     func startEyeRest() {
@@ -178,6 +194,50 @@ final class QuotaAppState: ObservableObject {
         return snapshot.isStale() || quotaState == .stale || quotaState == .offline
     }
 
+    var displayClaudeSnapshot: ClaudeUsageSnapshot? {
+        claudeSnapshot?.refreshedForElapsedResets()
+    }
+
+    var isClaudeDataStale: Bool {
+        guard let claudeSnapshot else { return true }
+        return claudeSnapshot.isStale() || claudeState == .stale || claudeState == .offline
+    }
+
+    #if DEBUG
+    /// Offline QA only: drive the view with fixed data instead of live providers.
+    func qaInject(
+        codex: QuotaSnapshot?,
+        codexState: QuotaState,
+        claude: ClaudeUsageSnapshot?,
+        claudeState: ClaudeUsageState,
+        eyeRest: EyeRestPresentation? = nil
+    ) {
+        snapshot = codex
+        quotaState = codexState
+        claudeSnapshot = claude
+        self.claudeState = claudeState
+        if let eyeRest { eyeRestPresentation = eyeRest }
+    }
+    #endif
+
+    private func handle(_ event: ClaudeProviderEvent) {
+        switch event {
+        case let .snapshot(newSnapshot):
+            claudeSnapshot = newSnapshot
+            claudeState = .live
+            persistClaude(newSnapshot)
+        case let .state(newState):
+            // Keep showing the last numbers while reconnecting or offline, but never after sign-out.
+            if claudeSnapshot != nil, newState == .offline || newState == .unsupported {
+                claudeState = .stale
+            } else if claudeSnapshot != nil, newState == .connecting, claudeState == .live {
+                return
+            } else {
+                claudeState = newState
+            }
+        }
+    }
+
     private func handle(_ event: ProviderEvent) {
         switch event {
         case let .snapshot(newSnapshot):
@@ -194,6 +254,9 @@ final class QuotaAppState: ObservableObject {
     }
 
     private func updateFreshness() {
+        if let claudeSnapshot, claudeSnapshot.isStale(), claudeState == .live {
+            claudeState = .stale
+        }
         guard let snapshot else { return }
         if snapshot.hasExpiredLimit() {
             quotaState = .connecting
@@ -229,6 +292,21 @@ final class QuotaAppState: ObservableObject {
             return nil
         }
         return snapshot.hasExpiredLimit() ? nil : snapshot
+    }
+
+    private func persistClaude(_ snapshot: ClaudeUsageSnapshot) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        if let data = try? encoder.encode(snapshot) {
+            defaults.set(data, forKey: Key.claudeSnapshot)
+        }
+    }
+
+    private static func loadClaudeSnapshot(from defaults: UserDefaults) -> ClaudeUsageSnapshot? {
+        guard let data = defaults.data(forKey: Key.claudeSnapshot) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        return try? decoder.decode(ClaudeUsageSnapshot.self, from: data)
     }
 
     private static func persistEyeRestSettings(_ settings: EyeRestSettings, to defaults: UserDefaults) {

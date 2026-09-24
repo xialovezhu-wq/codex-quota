@@ -13,6 +13,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var observerTokens: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        if let directory = ProcessInfo.processInfo.environment["CODEX_QUOTA_QA_RENDER"] {
+            QAPreviewRenderer.render(to: URL(fileURLWithPath: directory))
+            exit(0)
+        }
+        #endif
         NSApplication.shared.setActivationPolicy(.accessory)
 
         let panelController = OverlayPanelController(state: state)

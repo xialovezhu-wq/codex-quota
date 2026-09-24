@@ -32,8 +32,8 @@ final class OverlayPanelController: NSObject, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = true
-        panel.minSize = NSSize(width: 168, height: 56)
-        panel.maxSize = NSSize(width: 420, height: 144)
+        panel.minSize = WindowStateStore.minimumSize
+        panel.maxSize = WindowStateStore.maximumSize
         panel.level = state.isAlwaysOnTop ? .floating : .normal
 
         var behavior: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
@@ -41,11 +41,15 @@ final class OverlayPanelController: NSObject, NSWindowDelegate {
             behavior.insert(.canJoinAllApplications)
         }
         panel.collectionBehavior = behavior
-        panel.contentView = NSHostingView(
+        let hostingView = NSHostingView(
             rootView: QuotaView()
                 .environmentObject(state)
                 .ignoresSafeArea()
         )
+        // The panel's size is the user's (drag to resize, clamped by min/max); never let SwiftUI's
+        // ideal content size resize the window.
+        hostingView.sizingOptions = []
+        panel.contentView = hostingView
         setLocked(state.isLocked)
     }
 
