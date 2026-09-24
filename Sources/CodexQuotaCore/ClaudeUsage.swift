@@ -126,7 +126,7 @@ public enum ClaudeUsageDecoder {
 }
 
 extension QuotaFormatting {
-    /// Short reset hint for tight layouts: relative inside a day ("2 小时 5 分"), weekday and time beyond it.
+    /// Short reset hint for tight layouts: relative inside a day ("2小时5分后"), weekday and time beyond it.
     public static func compactResetLabel(
         for date: Date,
         now: Date = Date(),
@@ -137,10 +137,10 @@ extension QuotaFormatting {
         if seconds <= 60 { return "即将重置" }
         if seconds < 86_400 {
             let minutes = Int((seconds / 60).rounded(.up))
-            if minutes < 60 { return "\(minutes) 分钟后" }
+            if minutes < 60 { return "\(minutes)分钟后" }
             let hours = minutes / 60
             let rest = minutes % 60
-            return rest == 0 ? "\(hours) 小时后" : "\(hours) 小时 \(rest) 分后"
+            return rest == 0 ? "\(hours)小时后" : "\(hours)小时\(rest)分后"
         }
         let formatter = DateFormatter()
         formatter.locale = locale

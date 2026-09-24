@@ -171,8 +171,8 @@ func runClaudeUsageTests() throws {
 
     let utc = TimeZone(secondsFromGMT: 0)!
     try expect(QuotaFormatting.compactResetLabel(for: now.addingTimeInterval(30), now: now, timeZone: utc) == "即将重置", "reset imminent")
-    try expect(QuotaFormatting.compactResetLabel(for: now.addingTimeInterval(25 * 60), now: now, timeZone: utc) == "25 分钟后", "reset minutes")
-    try expect(QuotaFormatting.compactResetLabel(for: now.addingTimeInterval(2 * 3600 + 5 * 60), now: now, timeZone: utc) == "2 小时 5 分后", "reset hours")
+    try expect(QuotaFormatting.compactResetLabel(for: now.addingTimeInterval(25 * 60), now: now, timeZone: utc) == "25分钟后", "reset minutes")
+    try expect(QuotaFormatting.compactResetLabel(for: now.addingTimeInterval(2 * 3600 + 5 * 60), now: now, timeZone: utc) == "2小时5分后", "reset hours")
     try expect(QuotaFormatting.compactResetLabel(for: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: -3 * 86_400), timeZone: utc) == "周四 00:00", "reset weekday")
 }
 

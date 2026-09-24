@@ -33,6 +33,13 @@ enum QAPreviewRenderer {
             fetchedAt: now
         )
         let focusing = EyeRestPresentation(phase: .focusing, remainingSeconds: 481, isWarning: false, promptCount: 0)
+        let idle = EyeRestPresentation(phase: .idle, remainingSeconds: 1_200, isWarning: false, promptCount: 0)
+        let weeklyOnly = QuotaSnapshot(
+            bucketID: "codex",
+            windows: [QuotaWindow(id: "secondary", remainingPercent: 82, durationMinutes: 10_080, resetsAt: now.addingTimeInterval(5 * 86_400))],
+            fetchedAt: now,
+            sourceVersion: "qa"
+        )
         let resting = EyeRestPresentation(phase: .resting, remainingSeconds: 14, isWarning: false, promptCount: 1)
 
         let scenarios: [(String, CGSize, (QuotaAppState) -> Void)] = [
@@ -41,9 +48,9 @@ enum QAPreviewRenderer {
             ("low", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .stale, claude: lowClaude, claudeState: .live) }),
             ("signed-out", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: nil, claudeState: .signedOut) }),
             ("resting", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: resting) }),
-            ("compact", CGSize(width: 228, height: 72), { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing) }),
-            ("compact-min", WindowStateStore.minimumSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live) }),
-            ("large", CGSize(width: 480, height: 230), { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing) })
+            ("real-idle", WindowStateStore.defaultSize, { $0.qaInject(codex: weeklyOnly, codexState: .live, claude: nil, claudeState: .signedOut, eyeRest: idle) }),
+            ("min", WindowStateStore.minimumSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing) }),
+            ("large", NSSize(width: 600, height: 285), { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing) })
         ]
 
         for (name, size, configure) in scenarios {

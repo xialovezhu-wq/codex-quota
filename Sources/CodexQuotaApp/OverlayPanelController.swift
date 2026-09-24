@@ -34,6 +34,7 @@ final class OverlayPanelController: NSObject, NSWindowDelegate {
         panel.becomesKeyOnlyIfNeeded = true
         panel.minSize = WindowStateStore.minimumSize
         panel.maxSize = WindowStateStore.maximumSize
+        panel.contentAspectRatio = WindowStateStore.baseSize
         panel.level = state.isAlwaysOnTop ? .floating : .normal
 
         var behavior: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]

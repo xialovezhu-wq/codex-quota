@@ -10,24 +10,21 @@ struct QuotaView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let metrics = LayoutMetrics(containerSize: proxy.size)
+            let s = LayoutMetrics.scale(for: proxy.size)
             let isResting = state.eyeRestPresentation.phase == .resting
             let groups = [codexGroup, claudeGroup]
 
             ZStack {
-                background
+                background(scale: s)
 
                 Group {
                     if isResting {
-                        restingContent(metrics: metrics)
-                    } else if metrics.isCompact {
-                        compactContent(groups: groups, metrics: metrics)
+                        restingContent(scale: s)
                     } else {
-                        regularContent(groups: groups, metrics: metrics)
+                        regularContent(groups: groups, scale: s)
                     }
                 }
-                .padding(.horizontal, metrics.padding)
-                .padding(.vertical, metrics.padding * (metrics.isCompact ? 0.75 : 1))
+                .padding(12 * s)
             }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: groups.map(\.animationKey))
             .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: state.eyeRestPresentation.phase)
@@ -39,115 +36,113 @@ struct QuotaView: View {
 
     // MARK: - Layouts
 
-    private func regularContent(groups: [MeterGroup], metrics: LayoutMetrics) -> some View {
-        var tileMetrics = metrics
-        tileMetrics.reservesFooter = eyeRestFooterText != nil
-        return VStack(alignment: .leading, spacing: metrics.gap) {
-            HStack(alignment: .top, spacing: metrics.gap) {
+    private func regularContent(groups: [MeterGroup], scale s: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 8 * s) {
+            HStack(alignment: .top, spacing: 8 * s) {
                 ForEach(groups) { group in
-                    MeterTile(group: group, metrics: tileMetrics, contrast: contrast)
+                    MeterTile(group: group, scale: s, contrast: contrast)
                 }
             }
             .frame(maxHeight: .infinity, alignment: .top)
 
-            if let eyeRest = eyeRestFooterText {
-                HStack(spacing: 5 * metrics.scale) {
-                    Image(systemName: state.eyeRestPresentation.phase == .paused ? "pause.circle" : "eye")
-                        .font(.system(size: 10 * metrics.scale, weight: .medium))
-                    Text(eyeRest)
-                        .font(.system(size: 10.5 * metrics.scale, weight: .medium, design: .rounded))
-                        .monospacedDigit()
-                    Spacer(minLength: 0)
-                }
-                .foregroundStyle(Palette.secondary)
-                .padding(.horizontal, 4 * metrics.scale)
-                .lineLimit(1)
-            }
+            eyeRestFooter(scale: s)
         }
     }
 
-    private func compactContent(groups: [MeterGroup], metrics: LayoutMetrics) -> some View {
-        HStack(spacing: 10 * metrics.scale) {
-            VStack(alignment: .leading, spacing: metrics.showsCompactBars ? 5 : 3) {
-                ForEach(groups) { group in
-                    CompactMeterRow(group: group, metrics: metrics, contrast: contrast)
-                }
-            }
-            .frame(maxHeight: .infinity)
-
-            if let countdown = eyeRestCountdown {
-                VStack(spacing: 2) {
-                    Image(systemName: state.eyeRestPresentation.phase == .paused ? "pause.circle" : "eye")
-                        .font(.system(size: 10 * metrics.scale, weight: .medium))
-                    Text(countdown)
-                        .font(.system(size: 10.5 * metrics.scale, weight: .medium, design: .rounded))
-                        .monospacedDigit()
-                }
-                .foregroundStyle(Palette.secondary)
-            }
+    private func eyeRestFooter(scale s: CGFloat) -> some View {
+        let phase = state.eyeRestPresentation.phase
+        let countdown = EyeRestFormatting.countdown(seconds: state.eyeRestPresentation.remainingSeconds)
+        let icon: String
+        let text: String
+        let color: Color
+        switch phase {
+        case .focusing:
+            icon = "eye"
+            text = "距远眺 \(countdown)"
+            color = state.eyeRestPresentation.isWarning ? Palette.rest : Palette.primary.opacity(0.85)
+        case .paused:
+            icon = "pause.circle"
+            text = "护眼计时已暂停 · 剩余 \(countdown)"
+            color = Palette.secondary
+        case .idle, .resting:
+            icon = "eye.slash"
+            text = "护眼计时未开始 · ⌃⌥R 开始"
+            color = Palette.tertiary
         }
+        return HStack(spacing: 6 * s) {
+            Image(systemName: icon)
+                .font(.system(size: 13 * s, weight: .medium))
+            Text(text)
+                .font(.system(size: 14 * s, weight: .medium, design: .rounded))
+                .monospacedDigit()
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 6 * s)
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
     }
 
-    private func restingContent(metrics: LayoutMetrics) -> some View {
+    private func restingContent(scale s: CGFloat) -> some View {
         let seconds = state.eyeRestPresentation.remainingSeconds
-        return VStack(alignment: .leading, spacing: metrics.isCompact ? 4 : 8 * metrics.scale) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
+        return VStack(alignment: .leading, spacing: 10 * s) {
+            HStack(alignment: .firstTextBaseline, spacing: 8 * s) {
                 Image(systemName: "eye")
-                    .font(.system(size: 13 * metrics.scale, weight: .semibold))
+                    .font(.system(size: 18 * s, weight: .semibold))
                     .foregroundStyle(Palette.rest)
                 Text("看向远处")
-                    .font(.system(size: 14 * metrics.scale, weight: .semibold))
+                    .font(.system(size: 20 * s, weight: .semibold))
                     .foregroundStyle(Palette.primary)
                 Spacer(minLength: 4)
-                (Text("\(seconds)").font(.system(size: (metrics.isCompact ? 22 : 34) * metrics.scale, weight: .semibold, design: .rounded))
-                    + Text(" 秒").font(.system(size: 12 * metrics.scale, weight: .medium)))
+                (Text("\(seconds)").font(.system(size: 52 * s, weight: .semibold, design: .rounded))
+                    + Text(" 秒").font(.system(size: 17 * s, weight: .medium)))
                     .monospacedDigit()
                     .foregroundStyle(Palette.rest)
                     .contentTransition(.numericText())
             }
-            if !metrics.isCompact {
-                Text("约 6 米外 · 自然眨眼 · 暂时不要看手机")
-                    .font(.system(size: 11 * metrics.scale))
-                    .foregroundStyle(Palette.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Spacer(minLength: 0)
-            }
+            Text("约 6 米外 · 自然眨眼 · 暂时不要看手机")
+                .font(.system(size: 15 * s))
+                .foregroundStyle(Palette.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 0)
             MeterBar(
                 progress: CGFloat(seconds) / 20,
                 color: Palette.rest,
-                height: (contrast == .increased ? 5 : 4) * metrics.scale
+                height: (contrast == .increased ? 7 : 6) * s
             )
         }
-        .frame(maxHeight: .infinity, alignment: metrics.isCompact ? .center : .top)
+        .padding(.horizontal, 6 * s)
+        .padding(.vertical, 8 * s)
     }
 
-    @ViewBuilder
-    private var background: some View {
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
-        if reduceTransparency {
-            shape
-                .fill(Palette.surface.opacity(state.opacity))
-                .overlay(shape.stroke(Palette.border, lineWidth: 1))
-        } else {
-            shape
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    shape.fill(
-                        LinearGradient(
-                            colors: [Palette.surface.opacity(state.opacity), Palette.base.opacity(state.opacity)],
-                            startPoint: .top,
-                            endPoint: .bottom
+    private func background(scale s: CGFloat) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 20 * s, style: .continuous)
+        return Group {
+            if reduceTransparency {
+                shape
+                    .fill(Palette.surface.opacity(state.opacity))
+                    .overlay(shape.stroke(Palette.border, lineWidth: 1))
+            } else {
+                shape
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        shape.fill(
+                            LinearGradient(
+                                colors: [Palette.surface.opacity(state.opacity), Palette.base.opacity(state.opacity)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
                         )
                     )
-                )
-                .overlay(shape.stroke(Palette.border, lineWidth: contrast == .increased ? 1.5 : 1))
-                .overlay(
-                    shape
-                        .inset(by: 1)
-                        .stroke(Palette.topLight, lineWidth: 0.5)
-                        .mask(LinearGradient(colors: [.white, .clear], startPoint: .top, endPoint: .center))
-                )
+                    .overlay(shape.stroke(Palette.border, lineWidth: contrast == .increased ? 1.5 : 1))
+                    .overlay(
+                        shape
+                            .inset(by: 1)
+                            .stroke(Palette.topLight, lineWidth: 0.5)
+                            .mask(LinearGradient(colors: [.white, .clear], startPoint: .top, endPoint: .center))
+                    )
+            }
         }
     }
 
@@ -229,20 +224,6 @@ struct QuotaView: View {
 
     private static func windowLabel(minutes: Int) -> String {
         minutes == 10_080 ? "每周" : QuotaFormatting.durationLabel(minutes: minutes)
-    }
-
-    private var eyeRestCountdown: String? {
-        switch state.eyeRestPresentation.phase {
-        case .focusing, .paused:
-            return EyeRestFormatting.countdown(seconds: state.eyeRestPresentation.remainingSeconds)
-        case .idle, .resting:
-            return nil
-        }
-    }
-
-    private var eyeRestFooterText: String? {
-        guard let countdown = eyeRestCountdown else { return nil }
-        return state.eyeRestPresentation.phase == .paused ? "护眼已暂停 · 剩余 \(countdown)" : "距远眺 \(countdown)"
     }
 
     // MARK: - Menu
@@ -398,27 +379,27 @@ private struct MeterGroup: Identifiable {
 
 private struct MeterTile: View {
     let group: MeterGroup
-    let metrics: LayoutMetrics
+    let scale: CGFloat
     let contrast: ColorSchemeContrast
 
     var body: some View {
-        let s = metrics.scale
-        VStack(alignment: .leading, spacing: 5 * s) {
+        let s = scale
+        VStack(alignment: .leading, spacing: 6 * s) {
             header
 
-            VStack(alignment: .leading, spacing: 5 * s) {
+            VStack(alignment: .leading, spacing: 6 * s) {
                 tileBody
             }
             .frame(maxHeight: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 10 * s)
-        .padding(.vertical, 9 * s)
+        .padding(.horizontal, 12 * s)
+        .padding(.vertical, 10 * s)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 14 * s, style: .continuous)
                 .fill(Palette.tile)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: 14 * s, style: .continuous)
                         .stroke(Palette.tileBorder, lineWidth: contrast == .increased ? 1 : 0.5)
                 )
         )
@@ -426,45 +407,47 @@ private struct MeterTile: View {
 
     @ViewBuilder
     private var tileBody: some View {
-        let s = metrics.scale
+        let s = scale
         if let hero = group.hero {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                (Text("\(hero.remaining)").font(.system(size: 27 * s, weight: .semibold, design: .rounded))
-                    + Text("%").font(.system(size: 13 * s, weight: .medium, design: .rounded)))
+            HStack(alignment: .firstTextBaseline, spacing: 4 * s) {
+                (Text("\(hero.remaining)").font(.system(size: 38 * s, weight: .semibold, design: .rounded))
+                    + Text("%").font(.system(size: 18 * s, weight: .medium, design: .rounded)))
                     .foregroundStyle(group.numberColor(for: hero))
                     .monospacedDigit()
                     .contentTransition(.numericText())
                     .opacity(group.isStale ? 0.62 : 1)
-                Spacer(minLength: 2)
+                    .fixedSize()
+                Spacer(minLength: 2 * s)
                 if let reset = hero.resetText {
                     Text(reset)
-                        .font(.system(size: 10 * s, weight: .regular, design: .rounded))
+                        .font(.system(size: 13 * s, weight: .medium, design: .rounded))
                         .monospacedDigit()
                         .foregroundStyle(Palette.secondary)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.75)
+                        .minimumScaleFactor(0.7)
                 }
             }
 
             MeterBar(
                 progress: CGFloat(hero.remaining) / 100,
                 color: group.color(for: hero),
-                height: (contrast == .increased ? 5 : 4) * s
+                height: (contrast == .increased ? 7 : 6) * s
             )
             .opacity(group.isStale ? 0.55 : 1)
 
-            ForEach(group.details.prefix(metrics.detailRows)) { meter in
+            // One secondary window fits (e.g. the 5-hour one under a weekly hero); the rest stay in the menu tooltip.
+            ForEach(group.details.prefix(1)) { meter in
                 detailRow(meter)
             }
         } else {
             Text(group.message ?? "")
-                .font(.system(size: 11 * s, weight: .medium))
+                .font(.system(size: 15 * s, weight: .medium))
                 .foregroundStyle(Palette.secondary)
                 .lineLimit(2)
-                .minimumScaleFactor(0.8)
+                .minimumScaleFactor(0.75)
             if let hint = group.hint {
                 Text(hint)
-                    .font(.system(size: 9.5 * s, weight: .regular, design: .monospaced))
+                    .font(.system(size: 12 * s, weight: .regular, design: .monospaced))
                     .foregroundStyle(Palette.tertiary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
@@ -474,22 +457,22 @@ private struct MeterTile: View {
     }
 
     private var header: some View {
-        let s = metrics.scale
-        return HStack(spacing: 5 * s) {
+        let s = scale
+        return HStack(spacing: 6 * s) {
             Circle()
                 .fill(group.brand)
-                .frame(width: 6 * s, height: 6 * s)
+                .frame(width: 8 * s, height: 8 * s)
             Text(group.name)
-                .font(.system(size: 11 * s, weight: .semibold))
-                .foregroundStyle(Palette.primary.opacity(0.88))
-            Spacer(minLength: 2)
+                .font(.system(size: 15 * s, weight: .semibold))
+                .foregroundStyle(Palette.primary.opacity(0.9))
+            Spacer(minLength: 2 * s)
             if group.isStale {
                 Text(group.isUpdating ? "更新中" : "数据延迟")
-                    .font(.system(size: 9 * s, weight: .medium))
+                    .font(.system(size: 12 * s, weight: .medium))
                     .foregroundStyle(Palette.tertiary)
             } else if let hero = group.hero {
                 Text(hero.label)
-                    .font(.system(size: 10 * s, weight: .medium))
+                    .font(.system(size: 13 * s, weight: .medium))
                     .foregroundStyle(Palette.secondary)
             }
         }
@@ -497,16 +480,16 @@ private struct MeterTile: View {
     }
 
     private func detailRow(_ meter: Meter) -> some View {
-        let s = metrics.scale
-        return HStack(spacing: 6 * s) {
+        let s = scale
+        return HStack(spacing: 8 * s) {
             Text(meter.label)
-                .font(.system(size: 10 * s, weight: .medium))
+                .font(.system(size: 13 * s, weight: .medium))
                 .foregroundStyle(Palette.secondary)
                 .lineLimit(1)
-            MeterBar(progress: CGFloat(meter.remaining) / 100, color: group.color(for: meter).opacity(0.8), height: 3 * s)
-                .frame(minWidth: 12)
+                .fixedSize()
+            MeterBar(progress: CGFloat(meter.remaining) / 100, color: group.color(for: meter).opacity(0.8), height: 4 * s)
             Text("\(meter.remaining)%")
-                .font(.system(size: 10.5 * s, weight: .semibold, design: .rounded))
+                .font(.system(size: 14 * s, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(group.numberColor(for: meter).opacity(0.9))
                 .fixedSize()
@@ -514,49 +497,6 @@ private struct MeterTile: View {
         .padding(.top, 2 * s)
         .help(meter.resetsAt.map { QuotaFormatting.resetLabel(for: $0) } ?? "")
         .opacity(group.isStale ? 0.62 : 1)
-    }
-}
-
-private struct CompactMeterRow: View {
-    let group: MeterGroup
-    let metrics: LayoutMetrics
-    let contrast: ColorSchemeContrast
-
-    var body: some View {
-        let s = metrics.scale
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 5 * s) {
-                Circle()
-                    .fill(group.brand)
-                    .frame(width: 5 * s, height: 5 * s)
-                Text(group.name)
-                    .font(.system(size: 11 * s, weight: .semibold))
-                    .foregroundStyle(Palette.primary.opacity(0.88))
-                if let hero = group.hero {
-                    Text(hero.label)
-                        .font(.system(size: 10 * s))
-                        .foregroundStyle(Palette.secondary)
-                    Spacer(minLength: 2)
-                    Text("\(hero.remaining)%")
-                        .font(.system(size: 13 * s, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(group.numberColor(for: hero))
-                        .opacity(group.isStale ? 0.62 : 1)
-                } else {
-                    Spacer(minLength: 2)
-                    Text(group.hint ?? group.message ?? "")
-                        .font(.system(size: 10 * s))
-                        .foregroundStyle(Palette.secondary)
-                        .minimumScaleFactor(0.7)
-                }
-            }
-            .lineLimit(1)
-
-            if metrics.showsCompactBars, let hero = group.hero {
-                MeterBar(progress: CGFloat(hero.remaining) / 100, color: group.color(for: hero), height: 3 * s)
-                    .opacity(group.isStale ? 0.55 : 1)
-            }
-        }
     }
 }
 
@@ -580,45 +520,12 @@ private struct MeterBar: View {
 
 // MARK: - Layout
 
-private struct LayoutMetrics {
-    private static let defaultSize = WindowStateStore.defaultSize
-    private static let maximumSize = WindowStateStore.maximumSize
-
-    let size: CGSize
-    let scale: CGFloat
-    var reservesFooter = false
-
-    init(containerSize: CGSize) {
-        size = containerSize
-        let widthRatio = containerSize.width / Self.defaultSize.width
-        let heightRatio = containerSize.height / Self.defaultSize.height
-        let limitingRatio = min(widthRatio, heightRatio)
-
-        if containerSize.height < 112 || containerSize.width < 260 {
-            // Compact rows are sized off the old single-card proportions.
-            let compactRatio = min(containerSize.width / 228, containerSize.height / 72)
-            scale = max(0.9, min(1.25, compactRatio))
-        } else if limitingRatio < 1 {
-            scale = max(0.86, limitingRatio)
-        } else {
-            let widthProgress = (containerSize.width - Self.defaultSize.width)
-                / (Self.maximumSize.width - Self.defaultSize.width)
-            let heightProgress = (containerSize.height - Self.defaultSize.height)
-                / (Self.maximumSize.height - Self.defaultSize.height)
-            scale = 1 + max(0, min(1, min(widthProgress, heightProgress))) * 0.45
-        }
-    }
-
-    var isCompact: Bool { size.height < 112 || size.width < 260 }
-    var showsCompactBars: Bool { size.height >= 84 }
-    var padding: CGFloat { 11 * scale }
-    var gap: CGFloat { 7 * scale }
-
-    /// Secondary windows (e.g. the 5-hour one under a weekly hero) shown in each tile.
-    var detailRows: Int {
-        let spare = size.height - 100 * scale - (reservesFooter ? 22 * scale : 0)
-        guard spare > 0 else { return 0 }
-        return Int(spare / (20 * scale))
+/// The card is designed once at `WindowStateStore.baseSize`; the window keeps that aspect ratio, so every
+/// font, spacing and bar scales by the same factor when the window is resized from any edge.
+enum LayoutMetrics {
+    static func scale(for size: CGSize) -> CGFloat {
+        let base = WindowStateStore.baseSize
+        return max(0.5, min(size.width / base.width, size.height / base.height))
     }
 }
 

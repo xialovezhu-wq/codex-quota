@@ -34,6 +34,8 @@ final class QuotaAppState: ObservableObject {
         static let alwaysOnTop = "window.alwaysOnTop"
         static let opacity = "window.opacity"
         static let eyeRestSettings = "eyeRest.settings.v1"
+        /// The session the user last chose ("running"/"paused"), so a relaunch doesn't silently drop the timer.
+        static let eyeRestSession = "eyeRest.session.v1"
     }
 
     init(
@@ -90,6 +92,15 @@ final class QuotaAppState: ObservableObject {
         provider.start()
         claudeProvider.start()
         eyeRestController.startLifecycle()
+        switch defaults.string(forKey: Key.eyeRestSession) {
+        case "running":
+            startEyeRest()
+        case "paused":
+            startEyeRest()
+            pauseEyeRest()
+        default:
+            break
+        }
         staleTask?.cancel()
         staleTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -116,14 +127,17 @@ final class QuotaAppState: ObservableObject {
     func startEyeRest() {
         eyeRestReminderPresenter.prepareAuthorization()
         eyeRestController.startSession()
+        rememberEyeRestSession()
     }
 
     func pauseEyeRest() {
         eyeRestController.pauseSession()
+        rememberEyeRestSession()
     }
 
     func resumeEyeRest() {
         eyeRestController.resumeSession()
+        rememberEyeRestSession()
     }
 
     func toggleEyeRest() {
@@ -131,15 +145,30 @@ final class QuotaAppState: ObservableObject {
             eyeRestReminderPresenter.prepareAuthorization()
         }
         eyeRestController.toggleSession()
+        rememberEyeRestSession()
+    }
+
+    private func rememberEyeRestSession() {
+        let phase = eyeRestController.presentation.phase
+        switch phase {
+        case .focusing, .resting:
+            defaults.set("running", forKey: Key.eyeRestSession)
+        case .paused:
+            defaults.set("paused", forKey: Key.eyeRestSession)
+        case .idle:
+            defaults.removeObject(forKey: Key.eyeRestSession)
+        }
     }
 
     func endEyeRest() {
         eyeRestController.endSession()
+        rememberEyeRestSession()
     }
 
     func startImmediateEyeRest() {
         eyeRestReminderPresenter.prepareAuthorization()
         eyeRestController.startImmediateRest()
+        rememberEyeRestSession()
     }
 
     func screenAwayBegan(reason: EyeRestAwayReason) {
