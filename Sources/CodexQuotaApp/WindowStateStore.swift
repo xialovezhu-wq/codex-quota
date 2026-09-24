@@ -5,7 +5,7 @@ import Foundation
 @MainActor
 final class WindowStateStore {
     /// The card's design size. The window keeps this aspect ratio so resizing scales everything evenly.
-    nonisolated static let baseSize = NSSize(width: 400, height: 190)
+    nonisolated static let baseSize = NSSize(width: 480, height: 220)
     nonisolated static let minimumScale: CGFloat = 0.8
     nonisolated static let maximumScale: CGFloat = 2.2
     nonisolated static let defaultSize = baseSize
@@ -13,7 +13,10 @@ final class WindowStateStore {
     nonisolated static let maximumSize = NSSize(width: baseSize.width * maximumScale, height: baseSize.height * maximumScale)
 
     private let defaults: UserDefaults
-    private let key = "window.frame.v3"
+    private let key = "window.frame.v4"
+    /// v3 frames used the same proportional layout at a 400 pt base width: keep their position and zoom.
+    private let scaledLegacyKey = "window.frame.v3"
+    private static let scaledLegacyBaseWidth: Double = 400
     /// Frames saved by earlier layouts: keep their position, not their size.
     private let legacyKeys = ["window.frame.v2", "window.frame.v1"]
 
@@ -32,6 +35,10 @@ final class WindowStateStore {
         if let data = defaults.data(forKey: key),
            let current = try? JSONDecoder().decode(StoredFrame.self, from: data) {
             stored = current
+        } else if let data = defaults.data(forKey: scaledLegacyKey),
+                  let scaled = try? JSONDecoder().decode(StoredFrame.self, from: data) {
+            let zoom = scaled.width / Self.scaledLegacyBaseWidth
+            stored = scaled.resized(to: NSSize(width: defaultSize.width * zoom, height: defaultSize.height * zoom))
         } else if let legacy = legacyKeys.lazy.compactMap({ key in
             self.defaults.data(forKey: key).flatMap { try? JSONDecoder().decode(StoredFrame.self, from: $0) }
         }).first {
@@ -72,6 +79,7 @@ final class WindowStateStore {
 
     func reset() {
         defaults.removeObject(forKey: key)
+        defaults.removeObject(forKey: scaledLegacyKey)
         legacyKeys.forEach(defaults.removeObject(forKey:))
     }
 

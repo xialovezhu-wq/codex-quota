@@ -6,6 +6,20 @@ import SwiftUI
 /// Renders the overlay in fixed states to PNGs (`CODEX_QUOTA_QA_RENDER=<dir>`), without live data or a window.
 @MainActor
 enum QAPreviewRenderer {
+    /// Scans the real local logs twice (cold, then incremental) and prints the totals with timings.
+    static func printTodayUsage() {
+        let scanner = TokenUsageScanner()
+        for pass in ["cold", "warm"] {
+            let started = Date()
+            let usage = scanner.scan()
+            let elapsed = Date().timeIntervalSince(started)
+            print("[\(pass)] \(usage.day) in \(String(format: "%.3f", elapsed))s")
+            for (name, tally) in [("claude", usage.claude), ("codex", usage.codex)] {
+                print("  \(name): requests=\(tally.requests) tokens=\(tally.totalTokens) input=\(tally.uncachedInputTokens) cacheWrite=\(tally.cacheWriteTokens) cacheRead=\(tally.cacheReadTokens) output=\(tally.outputTokens) usd=\(String(format: "%.4f", tally.usd)) unpriced=\(tally.unpricedTokens)")
+            }
+        }
+    }
+
     static func render(to directory: URL) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let now = Date()
@@ -40,17 +54,32 @@ enum QAPreviewRenderer {
             fetchedAt: now,
             sourceVersion: "qa"
         )
+        var claudeToday = TokenTally()
+        claudeToday.requests = 449
+        claudeToday.uncachedInputTokens = 918
+        claudeToday.cacheWriteTokens = 1_472_371
+        claudeToday.cacheReadTokens = 173_949_266
+        claudeToday.outputTokens = 519_637
+        claudeToday.usd = 56.9652
+        var codexToday = TokenTally()
+        codexToday.requests = 84
+        codexToday.uncachedInputTokens = 986_360
+        codexToday.cacheReadTokens = 16_048_768
+        codexToday.outputTokens = 78_376
+        codexToday.usd = 15.0562
+        let usage = DailyTokenUsage(day: TokenFormatting.beijingDay(for: now), claude: claudeToday, codex: codexToday, scannedAt: now)
         let resting = EyeRestPresentation(phase: .resting, remainingSeconds: 14, isWarning: false, promptCount: 1)
 
         let scenarios: [(String, CGSize, (QuotaAppState) -> Void)] = [
-            ("default", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live) }),
-            ("focusing", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing) }),
-            ("low", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .stale, claude: lowClaude, claudeState: .live) }),
-            ("signed-out", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: nil, claudeState: .signedOut) }),
-            ("resting", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: resting) }),
-            ("real-idle", WindowStateStore.defaultSize, { $0.qaInject(codex: weeklyOnly, codexState: .live, claude: nil, claudeState: .signedOut, eyeRest: idle) }),
-            ("min", WindowStateStore.minimumSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing) }),
-            ("large", NSSize(width: 600, height: 285), { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing) })
+            ("default", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, todayUsage: usage) }),
+            ("focusing", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing, todayUsage: usage) }),
+            ("low", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .stale, claude: lowClaude, claudeState: .live, todayUsage: usage) }),
+            ("signed-out", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: nil, claudeState: .signedOut, todayUsage: usage) }),
+            ("resting", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: resting, todayUsage: usage) }),
+            ("real-idle", WindowStateStore.defaultSize, { $0.qaInject(codex: weeklyOnly, codexState: .live, claude: nil, claudeState: .signedOut, eyeRest: idle, todayUsage: usage) }),
+            ("min", WindowStateStore.minimumSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing, todayUsage: usage) }),
+            ("scanning", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing) }),
+            ("large", NSSize(width: WindowStateStore.baseSize.width * 1.5, height: WindowStateStore.baseSize.height * 1.5), { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing, todayUsage: usage) })
         ]
 
         for (name, size, configure) in scenarios {

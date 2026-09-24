@@ -21,7 +21,7 @@ struct QuotaView: View {
                     if isResting {
                         restingContent(scale: s)
                     } else {
-                        regularContent(groups: groups, scale: s)
+                        regularContent(groups: groups, scale: s, width: proxy.size.width)
                     }
                 }
                 .padding(12 * s)
@@ -36,11 +36,14 @@ struct QuotaView: View {
 
     // MARK: - Layouts
 
-    private func regularContent(groups: [MeterGroup], scale s: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 8 * s) {
+    private func regularContent(groups: [MeterGroup], scale s: CGFloat, width: CGFloat) -> some View {
+        // Both tiles show or drop the "tokens" unit together, so the two rows always match.
+        let tileTextWidth = (width - 2 * 12 * s - 8 * s) / 2 - 2 * 12 * s
+        let showsUnit = groups.allSatisfy { TodayRowMetrics.fitsWithUnit($0.today, scale: s, width: tileTextWidth) }
+        return VStack(alignment: .leading, spacing: 8 * s) {
             HStack(alignment: .top, spacing: 8 * s) {
                 ForEach(groups) { group in
-                    MeterTile(group: group, scale: s, contrast: contrast)
+                    MeterTile(group: group, scale: s, showsTokenUnit: showsUnit, contrast: contrast)
                 }
             }
             .frame(maxHeight: .infinity, alignment: .top)
@@ -66,7 +69,7 @@ struct QuotaView: View {
             color = Palette.secondary
         case .idle, .resting:
             icon = "eye.slash"
-            text = "护眼计时未开始 · ⌃⌥R 开始"
+            text = "护眼未开始 · ⌃⌥R"
             color = Palette.tertiary
         }
         return HStack(spacing: 6 * s) {
@@ -75,7 +78,19 @@ struct QuotaView: View {
             Text(text)
                 .font(.system(size: 14 * s, weight: .medium, design: .rounded))
                 .monospacedDigit()
-            Spacer(minLength: 0)
+            Spacer(minLength: 8 * s)
+            if let total = todayTotal {
+                HStack(alignment: .firstTextBaseline, spacing: 5 * s) {
+                    Text("今日合计")
+                        .font(.system(size: 12 * s, weight: .medium))
+                        .foregroundStyle(Palette.secondary)
+                    Text(total.money)
+                        .font(.system(size: 15 * s, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(Palette.primary)
+                }
+                .help(total.detail)
+            }
         }
         .foregroundStyle(color)
         .padding(.horizontal, 6 * s)
@@ -165,7 +180,8 @@ struct QuotaView: View {
             isStale: state.isDataStale,
             isUpdating: state.quotaState == .connecting,
             message: hero == nil ? codexMessage : nil,
-            hint: nil
+            hint: nil,
+            today: todayLine(state.todayUsage?.codex, name: "Codex")
         )
     }
 
@@ -207,7 +223,44 @@ struct QuotaView: View {
             isStale: snapshot != nil && state.isClaudeDataStale,
             isUpdating: state.claudeState == .connecting,
             message: message,
-            hint: hint
+            hint: hint,
+            today: todayLine(state.todayUsage?.claude, name: "Claude Code")
+        )
+    }
+
+    /// nil until the first scan finishes; the tile then shows a placeholder.
+    private func todayLine(_ tally: TokenTally?, name: String) -> TodayLine {
+        guard let tally, let usage = state.todayUsage else {
+            return TodayLine(tokens: "—", money: "", detail: "正在读取本机 \(name) 日志…")
+        }
+        let rate = state.exchangeRate
+        let yuan = tally.usd * rate.usdToCNY
+        let money: String
+        if tally.unpricedTokens > 0 {
+            money = tally.usd > 0 ? "≥" + TokenFormatting.yuan(yuan) : "未计价"
+        } else {
+            money = TokenFormatting.yuan(yuan)
+        }
+
+        var lines = [
+            "\(name) 今日（北京时间 \(usage.day)）· \(tally.requests) 次请求",
+            "输入 \(TokenFormatting.compactTokens(tally.uncachedInputTokens)) · 缓存写入 \(TokenFormatting.compactTokens(tally.cacheWriteTokens)) · 缓存读取 \(TokenFormatting.compactTokens(tally.cacheReadTokens)) · 输出 \(TokenFormatting.compactTokens(tally.outputTokens))",
+            "按 API 标价约 \(TokenFormatting.dollars(tally.usd))，汇率 \(String(format: "%.4f", rate.usdToCNY))（\(rate.asOf) · \(rate.source)）"
+        ]
+        if tally.unpricedTokens > 0 {
+            lines.append("另有 \(TokenFormatting.compactTokens(tally.unpricedTokens)) tokens 来自暂无标价的模型，未计入金额")
+        }
+        return TodayLine(tokens: TokenFormatting.compactTokens(tally.totalTokens), money: money, detail: lines.joined(separator: "\n"))
+    }
+
+    private var todayTotal: TodayLine? {
+        guard let usage = state.todayUsage else { return nil }
+        let combined = usage.combined
+        let line = todayLine(combined, name: "Claude Code + Codex")
+        return TodayLine(
+            tokens: line.tokens,
+            money: line.money,
+            detail: line.detail + "\n只统计本机 Claude Code 与 Codex 的日志；网页和 App 里的普通对话不在其中"
         )
     }
 
@@ -310,6 +363,12 @@ struct QuotaView: View {
             }
             return "\(group.name)：\(meters.joined(separator: "；"))\(group.isStale ? "，数据延迟" : "")"
         }
+        if let usage = state.todayUsage {
+            for (name, tally) in [("Codex", usage.codex), ("Claude", usage.claude)] {
+                let yuan = TokenFormatting.yuan(tally.usd * state.exchangeRate.usdToCNY)
+                parts.append("\(name) 今日 \(TokenFormatting.compactTokens(tally.totalTokens)) tokens，约 \(yuan)")
+            }
+        }
         switch state.eyeRestPresentation.phase {
         case .focusing:
             parts.append("距离远眺还有 \(EyeRestFormatting.countdown(seconds: state.eyeRestPresentation.remainingSeconds))")
@@ -357,6 +416,7 @@ private struct MeterGroup: Identifiable {
     let isUpdating: Bool
     let message: String?
     let hint: String?
+    let today: TodayLine
 
     var hero: Meter? { meters.first { $0.id == heroID } }
     var details: [Meter] { meters.filter { $0.id != heroID } }
@@ -375,11 +435,19 @@ private struct MeterGroup: Identifiable {
     }
 }
 
+private struct TodayLine: Equatable {
+    let tokens: String
+    let money: String
+    /// Hover text with the breakdown and pricing basis.
+    let detail: String
+}
+
 // MARK: - Components
 
 private struct MeterTile: View {
     let group: MeterGroup
     let scale: CGFloat
+    let showsTokenUnit: Bool
     let contrast: ColorSchemeContrast
 
     var body: some View {
@@ -391,6 +459,8 @@ private struct MeterTile: View {
                 tileBody
             }
             .frame(maxHeight: .infinity, alignment: .leading)
+
+            todayRow
         }
         .padding(.horizontal, 12 * s)
         .padding(.vertical, 10 * s)
@@ -456,6 +526,43 @@ private struct MeterTile: View {
         }
     }
 
+    private var todayRow: some View {
+        let s = scale
+        return VStack(alignment: .leading, spacing: 7 * s) {
+            Rectangle()
+                .fill(Palette.tileBorder)
+                .frame(height: 1)
+            todayContent(showsUnit: showsTokenUnit)
+        }
+        .contentShape(Rectangle())
+        .help(group.today.detail)
+    }
+
+    private func todayContent(showsUnit: Bool) -> some View {
+        let s = scale
+        return HStack(alignment: .firstTextBaseline, spacing: 4 * s) {
+            Text("今日")
+                .font(.system(size: 12 * s, weight: .medium))
+                .foregroundStyle(Palette.secondary)
+            Text(group.today.tokens)
+                .font(.system(size: 14 * s, weight: .semibold, design: .rounded))
+                .foregroundStyle(Palette.primary.opacity(0.9))
+            if showsUnit {
+                Text("tokens")
+                    .font(.system(size: 11 * s, weight: .medium))
+                    .foregroundStyle(Palette.tertiary)
+            }
+            Spacer(minLength: 4 * s)
+            Text(group.today.money)
+                .font(.system(size: 15 * s, weight: .semibold, design: .rounded))
+                .foregroundStyle(Palette.primary)
+                .layoutPriority(1)
+        }
+        .monospacedDigit()
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+    }
+
     private var header: some View {
         let s = scale
         return HStack(spacing: 6 * s) {
@@ -519,6 +626,33 @@ private struct MeterBar: View {
 }
 
 // MARK: - Layout
+
+/// Text widths of a tile's "今日" row, measured with the same fonts the row uses.
+private enum TodayRowMetrics {
+    static func fitsWithUnit(_ line: TodayLine, scale s: CGFloat, width: CGFloat) -> Bool {
+        let needed = textWidth("今日", size: 12 * s, weight: .medium)
+            + textWidth(line.tokens, size: 14 * s, weight: .semibold, rounded: true)
+            + textWidth("tokens", size: 11 * s, weight: .medium)
+            + textWidth(line.money, size: 15 * s, weight: .semibold, rounded: true)
+            + 4 * s * 4
+        return needed <= width
+    }
+
+    private static func textWidth(_ text: String, size: CGFloat, weight: NSFont.Weight, rounded: Bool = false) -> CGFloat {
+        var font = NSFont.systemFont(ofSize: size, weight: weight)
+        if rounded, let descriptor = font.fontDescriptor.withDesign(.rounded) {
+            font = NSFont(descriptor: descriptor, size: size) ?? font
+        }
+        let monospacedDigits = font.fontDescriptor.addingAttributes([
+            .featureSettings: [[
+                NSFontDescriptor.FeatureKey.typeIdentifier: kNumberSpacingType,
+                NSFontDescriptor.FeatureKey.selectorIdentifier: kMonospacedNumbersSelector
+            ]]
+        ])
+        font = NSFont(descriptor: monospacedDigits, size: size) ?? font
+        return ceil((text as NSString).size(withAttributes: [.font: font]).width)
+    }
+}
 
 /// The card is designed once at `WindowStateStore.baseSize`; the window keeps that aspect ratio, so every
 /// font, spacing and bar scales by the same factor when the window is resized from any edge.

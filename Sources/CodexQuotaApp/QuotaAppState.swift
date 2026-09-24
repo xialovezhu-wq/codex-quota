@@ -14,6 +14,9 @@ final class QuotaAppState: ObservableObject {
     @Published var opacity: Double
     @Published private(set) var isLaunchAtLoginEnabled: Bool
     @Published private(set) var eyeRestPresentation: EyeRestPresentation
+    /// Today's (Beijing time) token usage from local Claude Code / Codex logs; nil until the first scan.
+    @Published private(set) var todayUsage: DailyTokenUsage?
+    @Published private(set) var exchangeRate: ExchangeRate
 
     var onLockChanged: ((Bool) -> Void)?
     var onAlwaysOnTopChanged: ((Bool) -> Void)?
@@ -21,6 +24,8 @@ final class QuotaAppState: ObservableObject {
 
     private let provider: QuotaProvider
     private let claudeProvider: ClaudeUsageProvider
+    private let usageMonitor: TokenUsageMonitor
+    private let exchangeRateProvider: ExchangeRateProvider
     private let launchAtLogin = LaunchAtLoginController()
     private let defaults: UserDefaults
     private let eyeRestController: EyeRestController
@@ -41,6 +46,7 @@ final class QuotaAppState: ObservableObject {
     init(
         provider: QuotaProvider = CodexAppServerProvider(),
         claudeProvider: ClaudeUsageProvider = ClaudeUsageProvider(),
+        usageMonitor: TokenUsageMonitor = TokenUsageMonitor(),
         defaults: UserDefaults = .standard,
         eyeRestClock: any EyeRestClock = SystemEyeRestClock()
     ) {
@@ -48,6 +54,10 @@ final class QuotaAppState: ObservableObject {
         let eyeRestController = EyeRestController(settings: eyeRestSettings, clock: eyeRestClock)
         self.provider = provider
         self.claudeProvider = claudeProvider
+        self.usageMonitor = usageMonitor
+        let exchangeRateProvider = ExchangeRateProvider(defaults: defaults)
+        self.exchangeRateProvider = exchangeRateProvider
+        exchangeRate = exchangeRateProvider.rate
         self.defaults = defaults
         self.eyeRestController = eyeRestController
         eyeRestPresentation = eyeRestController.presentation
@@ -73,6 +83,17 @@ final class QuotaAppState: ObservableObject {
         claudeProvider.onEvent = { [weak self] event in
             self?.handle(event)
         }
+        usageMonitor.onUpdate = { [weak self] usage in
+            guard let self else { return }
+            let current = todayUsage
+            // Republish only when the totals move, not on every scan timestamp.
+            if current?.day != usage.day || current?.claude != usage.claude || current?.codex != usage.codex {
+                todayUsage = usage
+            }
+        }
+        exchangeRateProvider.onUpdate = { [weak self] rate in
+            self?.exchangeRate = rate
+        }
         eyeRestController.onChange = { [weak self] presentation in
             self?.eyeRestPresentation = presentation
         }
@@ -91,6 +112,8 @@ final class QuotaAppState: ObservableObject {
     func start() {
         provider.start()
         claudeProvider.start()
+        usageMonitor.start()
+        exchangeRateProvider.start()
         eyeRestController.startLifecycle()
         switch defaults.string(forKey: Key.eyeRestSession) {
         case "running":
@@ -116,12 +139,15 @@ final class QuotaAppState: ObservableObject {
         eyeRestController.stopLifecycle()
         provider.stop()
         claudeProvider.stop()
+        usageMonitor.stop()
+        exchangeRateProvider.stop()
     }
 
     func refresh() {
         quotaState = .connecting
         provider.refresh()
         claudeProvider.refresh()
+        usageMonitor.scanNow()
     }
 
     func startEyeRest() {
@@ -239,13 +265,16 @@ final class QuotaAppState: ObservableObject {
         codexState: QuotaState,
         claude: ClaudeUsageSnapshot?,
         claudeState: ClaudeUsageState,
-        eyeRest: EyeRestPresentation? = nil
+        eyeRest: EyeRestPresentation? = nil,
+        todayUsage: DailyTokenUsage? = nil
     ) {
         snapshot = codex
         quotaState = codexState
         claudeSnapshot = claude
         self.claudeState = claudeState
         if let eyeRest { eyeRestPresentation = eyeRest }
+        self.todayUsage = todayUsage
+        exchangeRate = .fallback
     }
     #endif
 

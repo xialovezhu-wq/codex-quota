@@ -18,6 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             QAPreviewRenderer.render(to: URL(fileURLWithPath: directory))
             exit(0)
         }
+        if ProcessInfo.processInfo.environment["CODEX_QUOTA_QA_SCAN"] == "1" {
+            QAPreviewRenderer.printTodayUsage()
+            exit(0)
+        }
         #endif
         NSApplication.shared.setActivationPolicy(.accessory)
 

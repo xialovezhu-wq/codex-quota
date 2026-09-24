@@ -176,9 +176,166 @@ func runClaudeUsageTests() throws {
     try expect(QuotaFormatting.compactResetLabel(for: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: -3 * 86_400), timeZone: utc) == "周四 00:00", "reset weekday")
 }
 
+func approx(_ lhs: Double, _ rhs: Double) -> Bool { abs(lhs - rhs) < 1e-9 }
+
+/// USD for (tokens, $/MTok) pairs.
+func usd(_ parts: (Double, Double)...) -> Double {
+    parts.reduce(0) { $0 + $1.0 * $1.1 } / 1_000_000
+}
+
+@MainActor
+func runTokenUsageTests() throws {
+    // Claude: Opus 5.5 with 1-hour cache writes, cache reads at 0.05x.
+    let claudeLine = Data(#"{"type":"assistant","requestId":"req_1","timestamp":"2026-09-24T01:52:55.752Z","message":{"id":"msg_1","model":"claude-opus-5-5","usage":{"input_tokens":2,"cache_creation_input_tokens":18754,"cache_read_input_tokens":36208,"output_tokens":170,"cache_creation":{"ephemeral_1h_input_tokens":18754,"ephemeral_5m_input_tokens":0}}}}"#.utf8)
+    let claude = try ClaudeTranscriptParser.event(fromLine: claudeLine).unwrap("claude usage line parses")
+    try expect(claude.key == "msg_1|req_1", "claude dedupe key is message id + request id")
+    try expect(claude.cacheWriteLong == 18_754 && claude.cacheWrite == 0, "1-hour writes kept separate")
+    try expect(claude.totalTokens == 2 + 18_754 + 36_208 + 170, "claude total tokens")
+    let claudeUSD = try ModelPriceBook.cost(of: claude).unwrap("opus 5.5 priced")
+    try expect(approx(claudeUSD, usd((2, 4), (18_754, 8), (36_208, 0.2), (170, 20))), "opus 5.5 cost")
+
+    var fable = claude
+    fable.model = "claude-fable-5-1"
+    let cost1 = try ModelPriceBook.cost(of: fable).unwrap("fable priced")
+    try expect(approx(cost1, usd((2, 10), (18_754, 20), (36_208, 0.25), (170, 50))), "fable 5.1 cache reads at 0.025x")
+    var fast = claude
+    fast.isFastMode = true
+    let cost2 = try ModelPriceBook.cost(of: fast).unwrap("fast priced")
+    try expect(approx(cost2, usd((2, 8), (18_754, 16), (36_208, 0.4), (170, 40))), "opus 5.5 fast mode scales cache rates")
+    var dated = claude
+    dated.model = "claude-sonnet-4-5-20250929"
+    try expect(ModelPriceBook.claudePrice(for: dated.model)?.input == 3, "date-suffixed model id")
+    dated.model = "claude-opus-9"
+    try expect(ModelPriceBook.cost(of: dated) == nil, "unknown model stays unpriced")
+
+    let unsplit = Data(#"{"type":"assistant","timestamp":"2026-09-24T02:00:00Z","uuid":"u1","message":{"model":"claude-haiku-4-5","usage":{"input_tokens":10,"cache_creation_input_tokens":100,"output_tokens":5}}}"#.utf8)
+    let haiku = try ClaudeTranscriptParser.event(fromLine: unsplit).unwrap("claude line without ids")
+    try expect(haiku.cacheWrite == 100 && haiku.key == "u1", "unsplit cache writes count as 5-minute; uuid fallback key")
+    try expect(ClaudeTranscriptParser.event(fromLine: Data(#"{"type":"user","message":{"content":"usage assistant"}}"#.utf8)) == nil, "non-assistant lines ignored")
+    try expect(ClaudeTranscriptParser.event(fromLine: Data(#"{"type":"assistant","timestamp":"2026-09-24T02:00:00Z","message":{"model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}"#.utf8)) == nil, "zero-usage entries ignored")
+
+    // Codex: model from turn_context; long-context tier above 272K prompt tokens.
+    var codex = CodexRolloutParser()
+    _ = codex.event(fromLine: Data(#"{"timestamp":"2026-09-24T03:04:05Z","type":"session_meta","payload":{"id":"s1"}}"#.utf8))
+    _ = codex.event(fromLine: Data(#"{"timestamp":"2026-09-24T03:04:06Z","type":"turn_context","payload":{"model":"gpt-6-sol"}}"#.utf8))
+    let record = Data(#"{"timestamp":"2026-09-24T03:04:16.423Z","type":"token_usage_record","payload":{"response_id":"resp_1","usage":{"input_tokens":300000,"cached_input_tokens":250000,"cache_write_input_tokens":0,"output_tokens":1000,"reasoning_output_tokens":600,"total_tokens":301000}}}"#.utf8)
+    let codexEvent = try codex.event(fromLine: record).unwrap("codex record parses")
+    try expect(codexEvent.model == "gpt-6-sol" && codexEvent.key == "resp|resp_1", "codex model and key")
+    try expect(codexEvent.uncachedInput == 50_000 && codexEvent.cacheRead == 250_000 && codexEvent.totalTokens == 301_000, "codex split matches total_tokens")
+    let cost3 = try ModelPriceBook.cost(of: codexEvent).unwrap("sol priced")
+    try expect(approx(cost3, usd((50_000, 4), (250_000, 0.4), (1_000, 15))), "long-context rates for >272K prompts")
+    var shortPrompt = codexEvent
+    shortPrompt.uncachedInput = 1_000
+    shortPrompt.cacheRead = 9_000
+    shortPrompt.promptTokens = 10_000
+    let cost4 = try ModelPriceBook.cost(of: shortPrompt).unwrap("sol short")
+    try expect(approx(cost4, usd((1_000, 2), (9_000, 0.2), (1_000, 10))), "standard rates below threshold")
+    let tokenCount = Data(#"{"timestamp":"2026-09-24T03:04:16.440Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":301000},"last_token_usage":{"input_tokens":300000,"cached_input_tokens":250000,"output_tokens":1000}}}}"#.utf8)
+    try expect(codex.event(fromLine: tokenCount) == nil, "token_count ignored once usage records exist")
+
+    var legacy = CodexRolloutParser()
+    _ = legacy.event(fromLine: Data(#"{"timestamp":"2026-09-24T01:00:00Z","type":"session_meta","payload":{"id":"old"}}"#.utf8))
+    _ = legacy.event(fromLine: Data(#"{"timestamp":"2026-09-24T01:00:01Z","type":"turn_context","payload":{"model":"gpt-5-codex"}}"#.utf8))
+    let legacyEvent = try legacy.event(fromLine: tokenCount).unwrap("legacy token_count fallback")
+    try expect(legacyEvent.key == "total|old|301000" && legacyEvent.model == "gpt-5-codex", "legacy key from running total")
+    try expect(ModelPriceBook.openAIPrice(for: "gpt-5-codex")?.standard.input == 1.25, "codex variant priced")
+
+    // Formatting.
+    try expect(TokenFormatting.compactTokens(8_532) == "8,532", "small token counts grouped")
+    try expect(TokenFormatting.compactTokens(1_234_567) == "123.5万", "wan with one decimal")
+    try expect(TokenFormatting.compactTokens(120_000) == "12万", "trailing .0 trimmed")
+    try expect(TokenFormatting.compactTokens(17_113_504) == "1711万", "whole wan above 1000万")
+    try expect(TokenFormatting.compactTokens(170_089_787) == "1.70亿", "yi with two decimals")
+    try expect(TokenFormatting.yuan(364.4378) == "¥364.44", "yuan rounding")
+    try expect(TokenFormatting.yuan(12_345.6) == "¥12,346", "large yuan grouped")
+    try expect(TokenFormatting.yuan(0.004) == "<¥0.01", "tiny yuan")
+    try expect(TokenFormatting.yuan(0) == "¥0", "zero yuan")
+
+    // Exchange rate sources.
+    let er = try ExchangeRate.decode(Data(#"{"result":"success","time_last_update_unix":1790208152,"rates":{"USD":1,"CNY":6.722655}}"#.utf8), source: "er").unwrap("open.er-api decodes")
+    try expect(approx(er.usdToCNY, 6.722655) && er.asOf == "2026-09-24", "open.er-api rate and Beijing date")
+    let frankfurter = try ExchangeRate.decode(Data(#"{"amount":1.0,"base":"USD","date":"2026-09-23","rates":{"CNY":6.7074}}"#.utf8), source: "ff").unwrap("frankfurter decodes")
+    try expect(frankfurter.asOf == "2026-09-23", "frankfurter date")
+    try expect(ExchangeRate.decode(Data(#"{"result":"error","rates":{"CNY":6.7}}"#.utf8), source: "x") == nil, "error payload rejected")
+    try expect(ExchangeRate.decode(Data(#"{"rates":{"CNY":670}}"#.utf8), source: "x") == nil, "implausible rate rejected")
+
+    try runScannerTests()
+}
+
+@MainActor
+func runScannerTests() throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("codexquota-scan-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+    let claudeDir = root.appendingPathComponent("claude/project")
+    let codexDir = root.appendingPathComponent("codex/2026/09/24")
+    try fm.createDirectory(at: claudeDir, withIntermediateDirectories: true)
+    try fm.createDirectory(at: codexDir, withIntermediateDirectories: true)
+
+    let now = Date()
+    let day = TokenFormatting.beijingDayInterval(containing: now)
+    let stamp = ISO8601DateFormatter()
+    stamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let today = stamp.string(from: day.start.addingTimeInterval(5))
+    let yesterday = stamp.string(from: day.start.addingTimeInterval(-5))
+
+    func claudeLine(_ id: String, _ time: String, output: Int = 100) -> String {
+        #"{"type":"assistant","requestId":"r\#(id)","timestamp":"\#(time)","message":{"id":"m\#(id)","model":"claude-sonnet-5","usage":{"input_tokens":1000,"cache_read_input_tokens":0,"output_tokens":\#(output)}}}"#
+    }
+    // Same reply twice (one line per content block), one from yesterday, and a forked copy in a second file.
+    let claudeFile = claudeDir.appendingPathComponent("a.jsonl")
+    try ([claudeLine("1", today), claudeLine("1", today), claudeLine("0", yesterday)].joined(separator: "\n") + "\n")
+        .write(to: claudeFile, atomically: true, encoding: .utf8)
+    try (claudeLine("1", today) + "\n").write(to: claudeDir.appendingPathComponent("fork.jsonl"), atomically: true, encoding: .utf8)
+    try (claudeLine("9", today) + "\n").write(to: claudeDir.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+
+    let codexFile = codexDir.appendingPathComponent("rollout.jsonl")
+    let codexLines = [
+        #"{"timestamp":"\#(yesterday)","type":"turn_context","payload":{"model":"gpt-6-luna"}}"#,
+        #"{"timestamp":"\#(today)","type":"token_usage_record","payload":{"response_id":"a","usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":10,"total_tokens":1010}}}"#
+    ]
+    try (codexLines.joined(separator: "\n") + "\n").write(to: codexFile, atomically: true, encoding: .utf8)
+
+    let scanner = TokenUsageScanner(roots: [
+        .init(source: .claude, directory: root.appendingPathComponent("claude")),
+        .init(source: .codex, directory: root.appendingPathComponent("codex"))
+    ], readChunkSize: 64)
+
+    var usage = scanner.scan(now: now)
+    try expect(usage.claude.requests == 1 && usage.claude.totalTokens == 1_100, "claude duplicates, forks and yesterday excluded")
+    try expect(approx(usage.claude.usd, usd((1_000, 2), (100, 10))), "claude tally priced")
+    try expect(usage.codex.requests == 1 && usage.codex.totalTokens == 1_010, "codex record counted with model from earlier line")
+    try expect(approx(usage.codex.usd, usd((1_000, 0.1), (10, 0.5))), "codex luna priced")
+
+    // Appends are picked up; an unfinished last line waits for its newline.
+    let appender = try FileHandle(forWritingTo: claudeFile)
+    try appender.seekToEnd()
+    try appender.write(contentsOf: Data((claudeLine("2", today, output: 50) + "\n" + claudeLine("3", today)).utf8))
+    usage = scanner.scan(now: now)
+    try expect(usage.claude.requests == 2 && usage.claude.totalTokens == 1_100 + 1_050, "appended line counted, partial line deferred")
+    try appender.write(contentsOf: Data("\n".utf8))
+    try appender.close()
+    usage = scanner.scan(now: now)
+    try expect(usage.claude.requests == 3, "partial line counted once complete")
+    usage = scanner.scan(now: now)
+    try expect(usage.claude.requests == 3 && usage.codex.requests == 1, "rescans do not double count")
+
+    // Next day: files last modified today are no longer today's usage.
+    usage = scanner.scan(now: day.end.addingTimeInterval(60))
+    try expect(usage.claude.requests == 0 && usage.codex.requests == 0 && usage.day != TokenFormatting.beijingDay(for: now), "new Beijing day starts from zero")
+}
+
+extension Optional {
+    func unwrap(_ message: String) throws -> Wrapped {
+        guard let value = self else { throw TestFailure.failed(message) }
+        return value
+    }
+}
+
 do {
     try runTests()
     try runClaudeUsageTests()
+    try runTokenUsageTests()
     print("PASS: \(checks) checks")
 } catch {
     fputs("FAIL: \(error)\n", stderr)
