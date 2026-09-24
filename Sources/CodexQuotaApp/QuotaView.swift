@@ -8,6 +8,15 @@ struct QuotaView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
+    /// Where the pointer rests (after a short delay); that tile, or both for the total, shows today's breakdown.
+    @State private var hovered: HoverTarget?
+    @State private var pendingHover: HoverTarget?
+    @State private var hoverTask: Task<Void, Never>?
+    /// QA renders force a hover state.
+    var previewHover: HoverTarget?
+    /// Offline renders can't draw the AppKit tracking view.
+    var tracksHover = true
+
     var body: some View {
         GeometryReader { proxy in
             let s = LayoutMetrics.scale(for: proxy.size)
@@ -28,9 +37,10 @@ struct QuotaView: View {
             }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: groups.map(\.animationKey))
             .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: state.eyeRestPresentation.phase)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: activeHover)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(isResting ? eyeRestAccessibilityText : accessibilityText(groups: groups))
-            .contextMenu { contextMenu }
+            .contextMenu { QuotaMenuContent(items: QuotaMenu.items(for: state, placement: .overlay)) }
         }
     }
 
@@ -43,7 +53,14 @@ struct QuotaView: View {
         return VStack(alignment: .leading, spacing: 8 * s) {
             HStack(alignment: .top, spacing: 8 * s) {
                 ForEach(groups) { group in
-                    MeterTile(group: group, scale: s, showsTokenUnit: showsUnit, contrast: contrast)
+                    MeterTile(
+                        group: group,
+                        scale: s,
+                        showsTokenUnit: showsUnit,
+                        showsDetails: activeHover == .tile(group.id) || activeHover == .total,
+                        contrast: contrast
+                    )
+                    .background { hoverTracker(.tile(group.id)) }
                 }
             }
             .frame(maxHeight: .infinity, alignment: .top)
@@ -89,7 +106,7 @@ struct QuotaView: View {
                         .monospacedDigit()
                         .foregroundStyle(Palette.primary)
                 }
-                .help(total.detail)
+                .background { hoverTracker(.total) }
             }
         }
         .foregroundStyle(color)
@@ -161,6 +178,39 @@ struct QuotaView: View {
         }
     }
 
+    // MARK: - Hover
+
+    private var activeHover: HoverTarget? { previewHover ?? hovered }
+
+    @ViewBuilder
+    private func hoverTracker(_ target: HoverTarget) -> some View {
+        if tracksHover {
+            HoverTracker { inside in hoverChanged(target, inside: inside) }
+        }
+    }
+
+    private func hoverChanged(_ target: HoverTarget, inside: Bool) {
+        if inside {
+            // A short delay so sweeping the pointer across the card doesn't flicker it.
+            hoverTask?.cancel()
+            pendingHover = target
+            hoverTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled else { return }
+                hovered = target
+            }
+        } else {
+            // Exit and enter events of neighbouring areas can arrive in either order.
+            if pendingHover == target {
+                hoverTask?.cancel()
+                pendingHover = nil
+            }
+            if hovered == target {
+                hovered = nil
+            }
+        }
+    }
+
     // MARK: - Data
 
     private var codexGroup: MeterGroup {
@@ -228,10 +278,10 @@ struct QuotaView: View {
         )
     }
 
-    /// nil until the first scan finishes; the tile then shows a placeholder.
+    /// Placeholder until the first scan finishes.
     private func todayLine(_ tally: TokenTally?, name: String) -> TodayLine {
-        guard let tally, let usage = state.todayUsage else {
-            return TodayLine(tokens: "—", money: "", detail: "正在读取本机 \(name) 日志…")
+        guard let tally, state.todayUsage != nil else {
+            return TodayLine(tokens: "—", money: "", requests: nil, rows: [], basis: "正在读取本机 \(name) 日志…")
         }
         let rate = state.exchangeRate
         let yuan = tally.usd * rate.usdToCNY
@@ -241,27 +291,27 @@ struct QuotaView: View {
         } else {
             money = TokenFormatting.yuan(yuan)
         }
-
-        var lines = [
-            "\(name) 今日（北京时间 \(usage.day)）· \(tally.requests) 次请求",
-            "输入 \(TokenFormatting.compactTokens(tally.uncachedInputTokens)) · 缓存写入 \(TokenFormatting.compactTokens(tally.cacheWriteTokens)) · 缓存读取 \(TokenFormatting.compactTokens(tally.cacheReadTokens)) · 输出 \(TokenFormatting.compactTokens(tally.outputTokens))",
-            "按 API 标价约 \(TokenFormatting.dollars(tally.usd))，汇率 \(String(format: "%.4f", rate.usdToCNY))（\(rate.asOf) · \(rate.source)）"
-        ]
+        var basis = "\(TokenFormatting.dollars(tally.usd)) × \(String(format: "%.4f", rate.usdToCNY))"
         if tally.unpricedTokens > 0 {
-            lines.append("另有 \(TokenFormatting.compactTokens(tally.unpricedTokens)) tokens 来自暂无标价的模型，未计入金额")
+            basis += " · 未计价 \(TokenFormatting.compactTokens(tally.unpricedTokens))"
         }
-        return TodayLine(tokens: TokenFormatting.compactTokens(tally.totalTokens), money: money, detail: lines.joined(separator: "\n"))
+        return TodayLine(
+            tokens: TokenFormatting.compactTokens(tally.totalTokens),
+            money: money,
+            requests: "\(tally.requests) 次请求",
+            rows: [
+                .init(label: "输入", value: TokenFormatting.compactTokens(tally.uncachedInputTokens)),
+                .init(label: "缓存写入", value: TokenFormatting.compactTokens(tally.cacheWriteTokens)),
+                .init(label: "缓存读取", value: TokenFormatting.compactTokens(tally.cacheReadTokens)),
+                .init(label: "输出", value: TokenFormatting.compactTokens(tally.outputTokens))
+            ],
+            basis: basis
+        )
     }
 
     private var todayTotal: TodayLine? {
         guard let usage = state.todayUsage else { return nil }
-        let combined = usage.combined
-        let line = todayLine(combined, name: "Claude Code + Codex")
-        return TodayLine(
-            tokens: line.tokens,
-            money: line.money,
-            detail: line.detail + "\n只统计本机 Claude Code 与 Codex 的日志；网页和 App 里的普通对话不在其中"
-        )
+        return todayLine(usage.combined, name: "Claude Code + Codex")
     }
 
     private var codexMessage: String {
@@ -279,79 +329,6 @@ struct QuotaView: View {
         minutes == 10_080 ? "每周" : QuotaFormatting.durationLabel(minutes: minutes)
     }
 
-    // MARK: - Menu
-
-    @ViewBuilder
-    private var contextMenu: some View {
-        switch state.eyeRestPresentation.phase {
-        case .idle:
-            Button("开始 20 分钟学习  ⌃⌥R") {
-                state.startEyeRest()
-            }
-        case .paused:
-            Button("继续 20 分钟计时  ⌃⌥R") {
-                state.resumeEyeRest()
-            }
-        case .focusing, .resting:
-            Button("暂停 20 分钟计时  ⌃⌥R") {
-                state.pauseEyeRest()
-            }
-        }
-
-        Button("立即远眺 20 秒") {
-            state.startImmediateEyeRest()
-        }
-
-        Button("结束并重置") {
-            state.endEyeRest()
-        }
-        .disabled(state.eyeRestPresentation.phase == .idle)
-
-        Divider()
-
-        Button("立即刷新") {
-            state.refresh()
-        }
-
-        Button("打开 Claude 用量页面") {
-            if let url = URL(string: "https://claude.ai/settings/usage") {
-                NSWorkspace.shared.open(url)
-            }
-        }
-
-        Divider()
-
-        Button(state.isLocked ? "解锁位置  ⌃⌥Q" : "锁定并点击穿透  ⌃⌥Q") {
-            state.toggleLocked()
-        }
-
-        Button(state.isAlwaysOnTop ? "取消始终置顶" : "始终置顶") {
-            state.setAlwaysOnTop(!state.isAlwaysOnTop)
-        }
-
-        Menu("透明度") {
-            ForEach([0.70, 0.85, 0.92, 1.0], id: \.self) { value in
-                Button("\(Int(value * 100))%\(abs(state.opacity - value) < 0.01 ? "  ✓" : "")") {
-                    state.setOpacity(value)
-                }
-            }
-        }
-
-        Button("恢复默认位置") {
-            state.resetPosition()
-        }
-
-        Divider()
-
-        Button(state.isLaunchAtLoginEnabled ? "关闭开机启动" : "开启开机启动") {
-            state.toggleLaunchAtLogin()
-        }
-
-        Button("退出 Codex 余量") {
-            NSApplication.shared.terminate(nil)
-        }
-    }
-
     // MARK: - Accessibility
 
     private func accessibilityText(groups: [MeterGroup]) -> String {
@@ -366,7 +343,13 @@ struct QuotaView: View {
         if let usage = state.todayUsage {
             for (name, tally) in [("Codex", usage.codex), ("Claude", usage.claude)] {
                 let yuan = TokenFormatting.yuan(tally.usd * state.exchangeRate.usdToCNY)
-                parts.append("\(name) 今日 \(TokenFormatting.compactTokens(tally.totalTokens)) tokens，约 \(yuan)")
+                parts.append(
+                    "\(name) 今日 \(tally.requests) 次请求，\(TokenFormatting.compactTokens(tally.totalTokens)) tokens，约 \(yuan)；"
+                        + "输入 \(TokenFormatting.compactTokens(tally.uncachedInputTokens))，"
+                        + "缓存写入 \(TokenFormatting.compactTokens(tally.cacheWriteTokens))，"
+                        + "缓存读取 \(TokenFormatting.compactTokens(tally.cacheReadTokens))，"
+                        + "输出 \(TokenFormatting.compactTokens(tally.outputTokens))"
+                )
             }
         }
         switch state.eyeRestPresentation.phase {
@@ -436,10 +419,24 @@ private struct MeterGroup: Identifiable {
 }
 
 private struct TodayLine: Equatable {
+    struct Row: Equatable {
+        let label: String
+        let value: String
+    }
+
     let tokens: String
     let money: String
-    /// Hover text with the breakdown and pricing basis.
-    let detail: String
+    /// "474 次请求"; nil before the first scan.
+    let requests: String?
+    /// Breakdown shown while the pointer rests on the tile.
+    let rows: [Row]
+    /// "$59.73 × 6.7227", or a status line before the first scan.
+    let basis: String
+}
+
+enum HoverTarget: Equatable {
+    case tile(String)
+    case total
 }
 
 // MARK: - Components
@@ -448,6 +445,7 @@ private struct MeterTile: View {
     let group: MeterGroup
     let scale: CGFloat
     let showsTokenUnit: Bool
+    let showsDetails: Bool
     let contrast: ColorSchemeContrast
 
     var body: some View {
@@ -456,9 +454,14 @@ private struct MeterTile: View {
             header
 
             VStack(alignment: .leading, spacing: 6 * s) {
-                tileBody
+                if showsDetails {
+                    detailBody
+                } else {
+                    tileBody
+                }
             }
             .frame(maxHeight: .infinity, alignment: .leading)
+            .transition(.opacity)
 
             todayRow
         }
@@ -526,6 +529,32 @@ private struct MeterTile: View {
         }
     }
 
+    /// Today's breakdown, in place of the quota while the pointer rests on the tile.
+    private var detailBody: some View {
+        let s = scale
+        return VStack(alignment: .leading, spacing: 3 * s) {
+            ForEach(group.today.rows, id: \.label) { row in
+                HStack(alignment: .firstTextBaseline, spacing: 6 * s) {
+                    Text(row.label)
+                        .font(.system(size: 12 * s, weight: .medium))
+                        .foregroundStyle(Palette.secondary)
+                    Spacer(minLength: 6 * s)
+                    Text(row.value)
+                        .font(.system(size: 13 * s, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(Palette.primary.opacity(0.9))
+                }
+            }
+            Text(group.today.basis)
+                .font(.system(size: 11 * s, weight: .medium, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Palette.tertiary)
+                .padding(.top, 1 * s)
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+    }
+
     private var todayRow: some View {
         let s = scale
         return VStack(alignment: .leading, spacing: 7 * s) {
@@ -534,8 +563,6 @@ private struct MeterTile: View {
                 .frame(height: 1)
             todayContent(showsUnit: showsTokenUnit)
         }
-        .contentShape(Rectangle())
-        .help(group.today.detail)
     }
 
     private func todayContent(showsUnit: Bool) -> some View {
@@ -573,7 +600,11 @@ private struct MeterTile: View {
                 .font(.system(size: 15 * s, weight: .semibold))
                 .foregroundStyle(Palette.primary.opacity(0.9))
             Spacer(minLength: 2 * s)
-            if group.isStale {
+            if showsDetails {
+                Text(group.today.requests.map { "今日 · \($0)" } ?? "今日明细")
+                    .font(.system(size: 12 * s, weight: .medium))
+                    .foregroundStyle(Palette.secondary)
+            } else if group.isStale {
                 Text(group.isUpdating ? "更新中" : "数据延迟")
                     .font(.system(size: 12 * s, weight: .medium))
                     .foregroundStyle(Palette.tertiary)
@@ -602,7 +633,6 @@ private struct MeterTile: View {
                 .fixedSize()
         }
         .padding(.top, 2 * s)
-        .help(meter.resetsAt.map { QuotaFormatting.resetLabel(for: $0) } ?? "")
         .opacity(group.isStale ? 0.62 : 1)
     }
 }
@@ -622,6 +652,48 @@ private struct MeterBar: View {
             }
         }
         .frame(height: height)
+    }
+}
+
+// MARK: - Hover tracking
+
+/// Reports the pointer entering and leaving its area. The overlay never becomes key and the app is rarely
+/// active, so this uses an always-active tracking area (SwiftUI's own hover and tooltips don't fire there).
+/// It never takes clicks, so dragging and the right-click menu work as before.
+private struct HoverTracker: NSViewRepresentable {
+    let onChange: @MainActor (Bool) -> Void
+
+    func makeNSView(context: Context) -> TrackingView {
+        let view = TrackingView()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateNSView(_ view: TrackingView, context: Context) {
+        view.onChange = onChange
+    }
+
+    final class TrackingView: NSView {
+        var onChange: (@MainActor (Bool) -> Void)?
+        private var trackingArea: NSTrackingArea?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let trackingArea { removeTrackingArea(trackingArea) }
+            let area = NSTrackingArea(
+                rect: .zero,
+                options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                owner: self,
+                userInfo: nil
+            )
+            addTrackingArea(area)
+            trackingArea = area
+        }
+
+        override func mouseEntered(with event: NSEvent) { onChange?(true) }
+        override func mouseExited(with event: NSEvent) { onChange?(false) }
     }
 }
 

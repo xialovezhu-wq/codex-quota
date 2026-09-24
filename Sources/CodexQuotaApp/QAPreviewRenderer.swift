@@ -71,6 +71,10 @@ enum QAPreviewRenderer {
         let resting = EyeRestPresentation(phase: .resting, remainingSeconds: 14, isWarning: false, promptCount: 1)
 
         let scenarios: [(String, CGSize, (QuotaAppState) -> Void)] = [
+            ("hover-claude", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing, todayUsage: usage) }),
+            ("hover-total", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing, todayUsage: usage) }),
+            ("hover-min", WindowStateStore.minimumSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing, todayUsage: usage) }),
+            ("hover-scanning", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing) }),
             ("default", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, todayUsage: usage) }),
             ("focusing", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing, todayUsage: usage) }),
             ("low", WindowStateStore.defaultSize, { $0.qaInject(codex: codex, codexState: .stale, claude: lowClaude, claudeState: .live, todayUsage: usage) }),
@@ -82,11 +86,31 @@ enum QAPreviewRenderer {
             ("large", NSSize(width: WindowStateStore.baseSize.width * 1.5, height: WindowStateStore.baseSize.height * 1.5), { $0.qaInject(codex: codex, codexState: .live, claude: claude, claudeState: .live, eyeRest: focusing, todayUsage: usage) })
         ]
 
+        // Menu bar icons, drawn the way the menu bar draws a template image, 4x.
+        for (name, icon) in [("menubar-icon", StatusItemController.quotaIcon), ("menubar-locked", StatusItemController.lockedIcon)] {
+            let size = NSSize(width: 72, height: 72)
+            let tinted = NSImage(size: size, flipped: false) { rect in
+                NSColor(white: 0.93, alpha: 1).setFill()
+                rect.fill()
+                let iconRect = NSRect(x: 0, y: 0, width: 72, height: 72).insetBy(dx: (72 - icon.size.width * 4) / 2, dy: (72 - icon.size.height * 4) / 2)
+                icon.draw(in: iconRect)
+                return true
+            }
+            if let tiff = tinted.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff), let png = rep.representation(using: .png, properties: [:]) {
+                try? png.write(to: directory.appendingPathComponent("\(name).png"))
+            }
+        }
+
         for (name, size, configure) in scenarios {
             let defaults = UserDefaults(suiteName: "codexquota.qa.\(UUID().uuidString)")!
             let state = QuotaAppState(defaults: defaults)
             configure(state)
-            let view = QuotaView()
+            let hover: HoverTarget? = switch name {
+            case "hover-claude": .tile("claude")
+            case "hover-total", "hover-min", "hover-scanning": .total
+            default: nil
+            }
+            let view = QuotaView(previewHover: hover, tracksHover: false)
                 .environmentObject(state)
                 .frame(width: size.width, height: size.height)
                 .padding(16)

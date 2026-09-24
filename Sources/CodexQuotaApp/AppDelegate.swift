@@ -7,6 +7,7 @@ import Foundation
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let state = QuotaAppState()
     private var panelController: OverlayPanelController?
+    private var statusItemController: StatusItemController?
     private var lockHotKey: GlobalHotKey?
     private var eyeRestHotKey: GlobalHotKey?
     private let pathMonitor = NWPathMonitor()
@@ -27,8 +28,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let panelController = OverlayPanelController(state: state)
         self.panelController = panelController
-        state.onLockChanged = { [weak panelController] locked in
+        let statusItemController = StatusItemController(state: state)
+        self.statusItemController = statusItemController
+        state.onLockChanged = { [weak panelController, weak statusItemController] locked in
             panelController?.setLocked(locked)
+            statusItemController?.setLocked(locked)
         }
         state.onAlwaysOnTopChanged = { [weak panelController] enabled in
             panelController?.setAlwaysOnTop(enabled)

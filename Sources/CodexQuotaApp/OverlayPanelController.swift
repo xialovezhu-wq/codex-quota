@@ -29,8 +29,6 @@ final class OverlayPanelController: NSObject, NSWindowDelegate {
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
         panel.isMovableByWindowBackground = true
-        // The panel never becomes key, so hover tooltips (today's usage breakdown) need this to appear.
-        panel.allowsToolTipsWhenApplicationIsInactive = true
         panel.hidesOnDeactivate = false
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = true
