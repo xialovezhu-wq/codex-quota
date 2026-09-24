@@ -6,7 +6,7 @@ import Foundation
 final class WindowStateStore {
     /// The card's design size. The window keeps this aspect ratio so resizing scales everything evenly.
     nonisolated static let baseSize = NSSize(width: 480, height: 220)
-    nonisolated static let minimumScale: CGFloat = 0.8
+    nonisolated static let minimumScale: CGFloat = 0.7
     nonisolated static let maximumScale: CGFloat = 2.2
     nonisolated static let defaultSize = baseSize
     nonisolated static let minimumSize = NSSize(width: baseSize.width * minimumScale, height: baseSize.height * minimumScale)

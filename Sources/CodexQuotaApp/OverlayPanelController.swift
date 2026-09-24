@@ -37,6 +37,9 @@ final class OverlayPanelController: NSObject, NSWindowDelegate {
         panel.minSize = WindowStateStore.minimumSize
         panel.maxSize = WindowStateStore.maximumSize
         panel.contentAspectRatio = WindowStateStore.baseSize
+        // With a locked aspect ratio AppKit resizes by content size, so bound that too (content == frame here).
+        panel.contentMinSize = WindowStateStore.minimumSize
+        panel.contentMaxSize = WindowStateStore.maximumSize
         panel.level = state.isAlwaysOnTop ? .floating : .normal
 
         var behavior: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
