@@ -55,6 +55,17 @@ public struct TokenTally: Codable, Equatable, Sendable {
         uncachedInputTokens + cacheReadTokens + cacheWriteTokens + outputTokens
     }
 
+    /// Input not served from the prompt cache: full-price input plus input written to the cache.
+    public var cacheMissTokens: Int64 {
+        uncachedInputTokens + cacheWriteTokens
+    }
+
+    /// Share of input tokens served from the cache; nil when there was no input.
+    public var cacheHitRate: Double? {
+        let input = cacheReadTokens + cacheMissTokens
+        return input > 0 ? Double(cacheReadTokens) / Double(input) : nil
+    }
+
     public mutating func add(_ event: UsageEvent) {
         requests += 1
         uncachedInputTokens += event.uncachedInput

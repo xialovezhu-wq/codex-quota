@@ -240,6 +240,20 @@ func runTokenUsageTests() throws {
     try expect(legacyEvent.key == "total|old|301000" && legacyEvent.model == "gpt-5-codex", "legacy key from running total")
     try expect(ModelPriceBook.openAIPrice(for: "gpt-5-codex")?.standard.input == 1.25, "codex variant priced")
 
+    // Cache hit / miss split.
+    var split = TokenTally()
+    split.add(claude)
+    try expect(split.cacheMissTokens == 2 + 18_754, "misses are uncached input plus cache writes")
+    let hitRate = try split.cacheHitRate.unwrap("hit rate")
+    try expect(approx(hitRate, 36_208.0 / 54_964.0), "hit rate over all input")
+    try expect(TokenTally().cacheHitRate == nil, "no input, no hit rate")
+    var codexSplit = TokenTally()
+    codexSplit.add(codexEvent)
+    try expect(codexSplit.cacheMissTokens == 50_000 && codexSplit.cacheReadTokens == 250_000, "codex misses exclude cached input")
+    try expect(TokenFormatting.percent(0.99176) == "99.2%", "percent one decimal")
+    try expect(TokenFormatting.percent(0.99996) == ">99.9%", "near-100% not rounded up")
+    try expect(TokenFormatting.percent(1) == "100.0%", "exact 100%")
+
     // Formatting.
     try expect(TokenFormatting.compactTokens(8_532) == "8,532", "small token counts grouped")
     try expect(TokenFormatting.compactTokens(1_234_567) == "123.5万", "wan with one decimal")

@@ -292,19 +292,27 @@ struct QuotaView: View {
             money = TokenFormatting.yuan(yuan)
         }
         var basis = "\(TokenFormatting.dollars(tally.usd)) × \(String(format: "%.4f", rate.usdToCNY))"
+        if let hitRate = tally.cacheHitRate {
+            basis = "命中率 \(TokenFormatting.percent(hitRate)) · " + basis
+        }
         if tally.unpricedTokens > 0 {
             basis += " · 未计价 \(TokenFormatting.compactTokens(tally.unpricedTokens))"
         }
+
+        var rows: [TodayLine.Row] = [
+            .init(label: "缓存命中", value: TokenFormatting.compactTokens(tally.cacheReadTokens)),
+            .init(label: "缓存未命中", value: TokenFormatting.compactTokens(tally.cacheMissTokens))
+        ]
+        // Claude writes most misses into the cache (billed above the input rate); show that share.
+        if tally.cacheWriteTokens > 0 {
+            rows.append(.init(label: "其中写入缓存", value: TokenFormatting.compactTokens(tally.cacheWriteTokens), isSubItem: true))
+        }
+        rows.append(.init(label: "输出", value: TokenFormatting.compactTokens(tally.outputTokens)))
         return TodayLine(
             tokens: TokenFormatting.compactTokens(tally.totalTokens),
             money: money,
             requests: "\(tally.requests) 次请求",
-            rows: [
-                .init(label: "输入", value: TokenFormatting.compactTokens(tally.uncachedInputTokens)),
-                .init(label: "缓存写入", value: TokenFormatting.compactTokens(tally.cacheWriteTokens)),
-                .init(label: "缓存读取", value: TokenFormatting.compactTokens(tally.cacheReadTokens)),
-                .init(label: "输出", value: TokenFormatting.compactTokens(tally.outputTokens))
-            ],
+            rows: rows,
             basis: basis
         )
     }
@@ -345,9 +353,8 @@ struct QuotaView: View {
                 let yuan = TokenFormatting.yuan(tally.usd * state.exchangeRate.usdToCNY)
                 parts.append(
                     "\(name) 今日 \(tally.requests) 次请求，\(TokenFormatting.compactTokens(tally.totalTokens)) tokens，约 \(yuan)；"
-                        + "输入 \(TokenFormatting.compactTokens(tally.uncachedInputTokens))，"
-                        + "缓存写入 \(TokenFormatting.compactTokens(tally.cacheWriteTokens))，"
-                        + "缓存读取 \(TokenFormatting.compactTokens(tally.cacheReadTokens))，"
+                        + "缓存命中 \(TokenFormatting.compactTokens(tally.cacheReadTokens))，"
+                        + "缓存未命中 \(TokenFormatting.compactTokens(tally.cacheMissTokens))，"
                         + "输出 \(TokenFormatting.compactTokens(tally.outputTokens))"
                 )
             }
@@ -422,6 +429,8 @@ private struct TodayLine: Equatable {
     struct Row: Equatable {
         let label: String
         let value: String
+        /// A part of the row above ("其中…"), drawn indented and quieter.
+        var isSubItem = false
     }
 
     let tokens: String
@@ -536,13 +545,14 @@ private struct MeterTile: View {
             ForEach(group.today.rows, id: \.label) { row in
                 HStack(alignment: .firstTextBaseline, spacing: 6 * s) {
                     Text(row.label)
-                        .font(.system(size: 12 * s, weight: .medium))
-                        .foregroundStyle(Palette.secondary)
+                        .font(.system(size: (row.isSubItem ? 11 : 12) * s, weight: .medium))
+                        .foregroundStyle(row.isSubItem ? Palette.tertiary : Palette.secondary)
+                        .padding(.leading, row.isSubItem ? 10 * s : 0)
                     Spacer(minLength: 6 * s)
                     Text(row.value)
-                        .font(.system(size: 13 * s, weight: .semibold, design: .rounded))
+                        .font(.system(size: (row.isSubItem ? 12 : 13) * s, weight: .semibold, design: .rounded))
                         .monospacedDigit()
-                        .foregroundStyle(Palette.primary.opacity(0.9))
+                        .foregroundStyle(row.isSubItem ? Palette.secondary : Palette.primary.opacity(0.9))
                 }
             }
             Text(group.today.basis)

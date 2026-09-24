@@ -245,6 +245,13 @@ public enum TokenFormatting {
         return "¥" + grouped(amount.rounded(), fractionDigits: 0)
     }
 
+    /// "99.2%"; values that round to 100% but aren't are shown as ">99.9%".
+    public static func percent(_ fraction: Double) -> String {
+        let value = min(1, max(0, fraction)) * 100
+        if value >= 99.95, value < 100 { return ">99.9%" }
+        return String(format: "%.1f%%", value)
+    }
+
     public static func dollars(_ amount: Double) -> String {
         guard amount.isFinite, amount > 0 else { return "$0" }
         if amount < 0.01 { return "<$0.01" }
